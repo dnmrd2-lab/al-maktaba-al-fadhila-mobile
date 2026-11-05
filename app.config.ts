@@ -1,10 +1,10 @@
-import { ExpoConfig, ConfigContext } from 'expo/config';
-
-export default ({ config }: ConfigContext): ExpoConfig => ({
-  ...config,
+export default {
   name: "الشيخ القرعاوي",
-  slug: "al-maktaba-al-fadhila-mobile",
+  slug: "al-qaraawi-library",
+  owner: "dnmrd2s-team",
   version: "1.0.0",
+  sdkVersion: "54.0.0",
+  platforms: ["ios", "android", "web"],
   orientation: "portrait",
   icon: "./assets/images/icon.png",
   scheme: "almaktabaalfa",
@@ -30,10 +30,14 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     output: "static",
     favicon: "./assets/images/favicon.png"
   },
-  plugins: [
-    "expo-router"
-  ],
+  plugins: ["expo-router"],
   experiments: {
     typedRoutes: true
+  },
+  extra: {
+    router: {},
+    eas: {
+      projectId: "913f1286-c020-408a-9008-24d765eac88a"
+    }
   }
-});
+};
