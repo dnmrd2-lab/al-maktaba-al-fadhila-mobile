@@ -15,7 +15,8 @@ if (process.env.EAS_BUILD === "true" && (!supabaseUrl || !supabasePublishableKey
 
 const config: ExpoConfig = {
   name: "تطبيق فضيلة الشيخ عبدالله بن إبراهيم بن عثمان القرعاوي إمام الجامع الكبير (جامع خادم الحرمين الشريفين ببريدة)",
-  slug: "al-maktaba-al-fadhila",
+  owner: "dnmrd2s-team",
+  slug: "al-qaraawi-library",
   version: "1.0.0",
   orientation: "portrait",
   icon: "./assets/images/icon.png",
@@ -38,6 +39,7 @@ const config: ExpoConfig = {
     predictiveBackGestureEnabled: false,
   },
   extra: {
+    eas: { projectId: "913f1286-c020-408a-9008-24d765eac88a" },
     supabaseUrl,
     supabasePublishableKey,
   },
