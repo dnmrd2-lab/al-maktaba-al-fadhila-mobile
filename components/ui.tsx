@@ -1,6 +1,7 @@
 import React, { type ReactNode } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from "react-native";
 import { SafeAreaView, type Edge } from "react-native-safe-area-context";
+import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import { palette, radius } from "../lib/theme";
 
 type AppScreenProps = { children: ReactNode; style?: StyleProp<ViewStyle>; edges?: Edge[] };
@@ -58,6 +59,26 @@ export function FeedbackPanel({ title, message, loading, action, onAction }: { t
   );
 }
 
+export function LibraryLoadAlert({ message, onRetry, retrying = false }: { message: string; onRetry: () => void; retrying?: boolean }) {
+  return (
+    <View accessibilityRole="alert" style={styles.libraryAlert}>
+      <View style={styles.libraryAlertHeading}>
+        <MaterialCommunityIcons name="alert-circle-outline" size={22} color={palette.danger} />
+        <Text style={styles.libraryAlertTitle}>تعذّر تحميل الكتب</Text>
+      </View>
+      <Text style={styles.libraryAlertMessage}>{message}</Text>
+      <PrimaryButton
+        title="إعادة المحاولة"
+        onPress={onRetry}
+        busy={retrying}
+        disabled={retrying}
+        variant="secondary"
+        style={styles.libraryRetryButton}
+      />
+    </View>
+  );
+}
+
 export function Pill({ label, selected, onPress }: { label: string; selected?: boolean; onPress?: () => void }) {
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [styles.pill, selected ? styles.pillSelected : styles.pillIdle, pressed && { opacity: 0.72 }]}>
@@ -91,6 +112,11 @@ const styles = StyleSheet.create({
   feedback: { padding: 24, marginHorizontal: 20, marginTop: 20, alignItems: "center", borderRadius: radius.card, backgroundColor: palette.surface, borderWidth: 1, borderColor: palette.border },
   feedbackTitle: { color: palette.ink, fontSize: 16, fontWeight: "800", textAlign: "center", marginTop: 8 },
   feedbackMessage: { color: palette.muted, fontSize: 13, textAlign: "center", lineHeight: 21, marginTop: 6 },
+  libraryAlert: { padding: 16, marginHorizontal: 18, marginTop: 12, borderRadius: radius.card, backgroundColor: "#FFF5F1", borderWidth: 1, borderColor: "#E4B4AA" },
+  libraryAlertHeading: { flexDirection: "row-reverse", alignItems: "center", gap: 8 },
+  libraryAlertTitle: { color: palette.danger, fontSize: 15, fontWeight: "900", textAlign: "right" },
+  libraryAlertMessage: { color: palette.ink, fontSize: 13, lineHeight: 22, textAlign: "right", marginTop: 8 },
+  libraryRetryButton: { alignSelf: "flex-end", marginTop: 12 },
   pill: { paddingHorizontal: 16, paddingVertical: 9, borderRadius: radius.pill, borderWidth: 1 },
   pillSelected: { borderColor: palette.green, backgroundColor: palette.green },
   pillIdle: { borderColor: palette.border, backgroundColor: palette.surface },

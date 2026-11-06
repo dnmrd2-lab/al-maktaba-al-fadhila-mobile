@@ -23,9 +23,26 @@ export function formatPages(pages: number): string {
 
 export function getLibraryErrorMessage(error: unknown): string {
   const candidate = error as { code?: unknown; message?: unknown } | null;
-  if (candidate?.code === "PGRST205" || candidate?.code === "42P01") {
-    return "قاعدة Supabase المتصلة لا تحتوي جداول الكتب أو التصنيفات. تحقق من عنوان المشروع أو طبّق ترحيلات قاعدة المكتبة.";
+  const code = typeof candidate?.code === "string" ? candidate.code.toUpperCase() : "";
+  const rawMessage = typeof candidate?.message === "string" ? candidate.message.trim() : "";
+  const details = `${code} ${rawMessage}`.toLocaleLowerCase("en");
+
+  if (code === "PGRST205" || code === "42P01") {
+    return "تعذر تحميل الكتب لأن جداول المكتبة غير جاهزة. تواصل مع مسؤول المكتبة.";
   }
-  if (typeof candidate?.message === "string" && candidate.message.trim()) return candidate.message;
-  return "تعذر تحميل بيانات المكتبة. تحقق من الاتصال ثم أعد المحاولة.";
+  if (
+    code === "42501" ||
+    code === "401" ||
+    code === "403" ||
+    /permission denied|row-level security|not authorized|unauthorized/.test(details)
+  ) {
+    return "تعذر تحميل الكتب بسبب صلاحيات الوصول. تواصل مع مسؤول المكتبة.";
+  }
+  if (/expo_public_supabase|إعداد supabase غير مكتمل|not-configured/.test(details)) {
+    return "إعداد اتصال المكتبة غير مكتمل في هذه النسخة. حدّث التطبيق أو تواصل مع مسؤول المكتبة.";
+  }
+  if (/network|fetch|connection|connect|timeout|timed out|offline|internet|unreachable|dns|econn|enotfound/.test(details)) {
+    return "تعذر الاتصال بقاعدة بيانات المكتبة. تحقق من اتصال الإنترنت ثم اضغط «إعادة المحاولة».";
+  }
+  return "حدث خطأ أثناء تحميل الكتب. تحقق من اتصال الإنترنت ثم أعد المحاولة. إذا استمرت المشكلة، تواصل مع مسؤول المكتبة.";
 }

@@ -3,7 +3,7 @@ import { FlatList, Image, Pressable, StyleSheet, Text, View } from "react-native
 import { useRouter } from "expo-router";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import { BookCard } from "../../components/BookCard";
-import { AppScreen, FeedbackPanel, SectionTitle } from "../../components/ui";
+import { AppScreen, FeedbackPanel, LibraryLoadAlert, SectionTitle } from "../../components/ui";
 import { useApp } from "../../lib/app-context";
 import { APP_ROLE, APP_TITLE } from "../../lib/branding";
 import { getBooksToContinue } from "../../lib/library-utils";
@@ -82,7 +82,7 @@ export default function HomeScreen() {
               ))}
             </View>
             <View style={styles.sectionTop}><SectionTitle title="مختارات المكتبة" action="عرض الكل" onAction={() => router.push("/library")} /></View>
-            {error ? <FeedbackPanel title="تعذر تحميل المكتبة" message={error} action="إعادة المحاولة" onAction={() => void refresh()} /> : null}
+            {error ? <LibraryLoadAlert message={error} onRetry={() => void refresh()} /> : null}
             {isLoading ? <FeedbackPanel title="جارٍ تحميل الكتب" loading /> : null}
           </>
         }

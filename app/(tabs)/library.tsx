@@ -2,7 +2,7 @@ import React, { useMemo, useState } from "react";
 import { FlatList, StyleSheet, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { BookCard } from "../../components/BookCard";
-import { AppHeader, AppScreen, FeedbackPanel, Pill } from "../../components/ui";
+import { AppHeader, AppScreen, FeedbackPanel, LibraryLoadAlert, Pill } from "../../components/ui";
 import { useApp } from "../../lib/app-context";
 import { useLocalLibrary } from "../../lib/local-library";
 import { filterBooks } from "../../lib/library-utils";
@@ -24,7 +24,7 @@ export default function LibraryScreen() {
         {folders.map((folder) => <Pill key={folder.id} label={folder.name} selected={selectedFolder === folder.id} onPress={() => setSelectedFolder(folder.id)} />)}
       </View>
       <View style={styles.summary}><Text style={styles.summaryText}>{visible.length.toLocaleString("ar-EG")} كتاب</Text><Text style={styles.summaryTitle}>{selectedFolder ? folders.find((folder) => folder.id === selectedFolder)?.name : "جميع التصنيفات"}</Text></View>
-      {error ? <FeedbackPanel title="تعذر تحميل المكتبة" message={error} action="إعادة المحاولة" onAction={() => void refresh()} /> : null}
+      {error ? <LibraryLoadAlert message={error} onRetry={() => void refresh()} /> : null}
       {isLoading ? <FeedbackPanel title="جارٍ تحميل الكتب" loading /> : null}
       <FlatList
         data={visible}
