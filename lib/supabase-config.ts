@@ -1,6 +1,7 @@
 type SupabaseEnvironment = {
   EXPO_PUBLIC_SUPABASE_URL?: string;
   EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY?: string;
+  EXPO_PUBLIC_SUPABASE_ANON_KEY?: string;
 };
 
 type ResolvedSupabaseConfig = {
@@ -27,6 +28,7 @@ export function resolveSupabaseConfig(
       readString(extra.supabaseUrl),
     publishableKey:
       readString(environment.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY) ||
+      readString(environment.EXPO_PUBLIC_SUPABASE_ANON_KEY) ||
       readString(extra.supabasePublishableKey),
   };
 }

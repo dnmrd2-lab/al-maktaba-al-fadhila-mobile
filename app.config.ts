@@ -2,10 +2,15 @@ import "./scripts/load-env.js";
 import type { ExpoConfig } from "expo/config";
 
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL?.trim() ?? "";
-const supabasePublishableKey = process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY?.trim() ?? "";
+const supabasePublishableKey =
+  process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY?.trim() ||
+  process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY?.trim() ||
+  "";
 
 if (process.env.EAS_BUILD === "true" && (!supabaseUrl || !supabasePublishableKey)) {
-  throw new Error("Missing EXPO_PUBLIC_SUPABASE_URL or EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY for this EAS build.");
+  throw new Error(
+    "Missing EXPO_PUBLIC_SUPABASE_URL or a public Supabase key (EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY or EXPO_PUBLIC_SUPABASE_ANON_KEY) for this EAS build.",
+  );
 }
 
 const config: ExpoConfig = {

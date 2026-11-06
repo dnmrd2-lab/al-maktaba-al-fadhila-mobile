@@ -12,18 +12,18 @@
 - حالة خطأ مفهومة ومهلة اتصال؛ لا ينبغي أن يبقى تحميل المكتبة معلقًا إلى ما لا نهاية إذا غاب المخطط أو تعذر الاتصال.
 - فتح ملفات PDF عبر عارض النظام/المتصفح برابط موقّع قصير الأجل؛ لا يوجد عارض PDF أصلي مضمّن بعد.
 
-## إعداد قاعدة Supabase — خطوة مطلوبة
+## إعداد قاعدة Supabase في EAS
 
-متغيرا البيئة اللازمان في **WebDev project secrets**:
+يحتاج التطبيق إلى متغيري اتصال عامين في بيئات البناء `development` و`preview` و`production`:
 
 ```text
 EXPO_PUBLIC_SUPABASE_URL
-EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY أو EXPO_PUBLIC_SUPABASE_ANON_KEY
 ```
 
-المشروع الذي اختير ليحمل بيانات المكتبة هو `nifsimcmrumfhewvtybx` (الرابط المتوقع: `https://nifsimcmrumfhewvtybx.supabase.co`). **لكن حزمة Expo التي جرى فحصها ما زالت مضمّنة بعنوان `shevwsbzkgdguucpbkcl.supabase.co`، وجدولا `books` و`folders` غير موجودين هناك (`PGRST205`).** يجب تغيير المتغيرين إلى قيم المشروع `nifsim…` من إعدادات أسرار WebDev ثم إعادة تشغيل Metro وإعادة فحص البيانات.
+يقبل التطبيق الاسمين للمفتاح العام؛ إعداد EAS الحالي يستخدم `EXPO_PUBLIC_SUPABASE_ANON_KEY`. يجب أن يشير الرابط والمفتاح إلى مشروع Supabase نفسه. المشروع المستخدم حاليًا للمكتبة هو `shevwsbzkgdguucpbkcl`.
 
-استخدم مفتاح `publishable`/`anon` العام الخاص بالمشروع نفسه فقط. لا تضع `service_role` أو أي مفتاح إداري داخل التطبيق أو المستودع. لم تُجرَ أي كتابة أو ترحيل على قاعدة بيانات بعيدة.
+استخدم مفتاح `publishable`/`anon` العام فقط. لا تضع `service_role` أو أي مفتاح إداري داخل التطبيق أو مستودع GitHub.
 
 ## التشغيل والتجربة
 

@@ -4,11 +4,15 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const projectUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
-const publishableKey = process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+const publishableKey =
+  process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
 
 async function expectReadable(path: string) {
   expect(projectUrl, "EXPO_PUBLIC_SUPABASE_URL must be configured").toBeTruthy();
-  expect(publishableKey, "EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY must be configured").toBeTruthy();
+  expect(
+    publishableKey,
+    "EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY or EXPO_PUBLIC_SUPABASE_ANON_KEY must be configured",
+  ).toBeTruthy();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 12000);
   try {
