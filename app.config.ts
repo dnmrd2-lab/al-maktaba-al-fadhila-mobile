@@ -39,5 +39,41 @@ export default {
     eas: {
       projectId: "913f1286-c020-408a-9008-24d765eac88a"
     }
+  }export default {
+  name: "الشيخ القرعاوي",
+  slug: "al-qaraawi-library",
+  owner: "dnmrd2s-team",
+  version: "1.0.0",
+  sdkVersion: "54.0.0",
+  platforms: ["ios", "android", "web"],
+  orientation: "portrait",
+  icon: "./assets/images/icon.png",
+  scheme: "almaktabaalfa",
+  userInterfaceStyle: "automatic",
+  splash: {
+    image: "./assets/images/splash-icon.png",
+    resizeMode: "contain",
+    backgroundColor: "#f5f0eb"
+  },
+  android: {
+    package: "com.elkelany.alqaraawi.library"
+  },
+  web: {
+    bundler: "metro",
+    output: "static",
+    favicon: "./assets/images/favicon.png"
+  },
+  plugins: ["expo-router"],
+  experiments: {
+    typedRoutes: true
+  },
+  extra: {
+    router: {},
+    eas: {
+      projectId: "913f1286-c020-408a-9008-24d765eac88a"
+    },
+    supabaseUrl: "https://shevwsbzkgdguucpbkcl.supabase.co",
+    supabaseAnonKey: "sb_publishable_k5c38JBFG80SeKH1vHSA-Ptpk…" // ضع مفتاح الـ Publishable key كاملاً هنا
   }
+};
 };
