@@ -140,6 +140,38 @@ export default function AdminScreen() {
     if (!folderId && folders[0]) setFolderId(folders[0].id);
   }, [folders, folderId]);
 
+  const resetBookForm = () => {
+    setTitle("");
+    setAuthor("");
+    setDescription("");
+    setCategory("");
+    setPages("");
+    setPdfAsset(null);
+    setCoverAsset(null);
+    setEditingBookId(null);
+    setCoverKey("green");
+    setDownloadPolicy("READ_ONLY");
+  };
+
+  const startEditing = (book: Book) => {
+    if (book.published && !isAdmin) {
+      setSaveFeedback({ tone: "error", message: "مسؤول المحتوى يستطيع تعديل المسودات فقط؛ اطلب من المدير الرئيسي تعديل هذا الكتاب المنشور." });
+      return;
+    }
+    setEditingBookId(book.id);
+    setTitle(book.title);
+    setAuthor(book.author);
+    setDescription(book.description);
+    setCategory(book.category);
+    setPages(book.pages ? String(book.pages) : "");
+    setFolderId(book.folderId);
+    setCoverKey(book.coverKey);
+    setDownloadPolicy(book.downloadPolicy);
+    setPdfAsset(null);
+    setCoverAsset(null);
+    setSaveFeedback(null);
+  };
+
   useEffect(() => {
     if (editBookId && books.length > 0) {
       const target = books.find((b) => b.id === editBookId);
@@ -210,37 +242,7 @@ export default function AdminScreen() {
     }
   };
 
-  const resetBookForm = () => {
-    setTitle("");
-    setAuthor("");
-    setDescription("");
-    setCategory("");
-    setPages("");
-    setPdfAsset(null);
-    setCoverAsset(null);
-    setEditingBookId(null);
-    setCoverKey("green");
-    setDownloadPolicy("READ_ONLY");
-  };
 
-  const startEditing = (book: Book) => {
-    if (book.published && !isAdmin) {
-      setSaveFeedback({ tone: "error", message: "مسؤول المحتوى يستطيع تعديل المسودات فقط؛ اطلب من المدير الرئيسي تعديل هذا الكتاب المنشور." });
-      return;
-    }
-    setEditingBookId(book.id);
-    setTitle(book.title);
-    setAuthor(book.author);
-    setDescription(book.description);
-    setCategory(book.category);
-    setPages(book.pages ? String(book.pages) : "");
-    setFolderId(book.folderId);
-    setCoverKey(book.coverKey);
-    setDownloadPolicy(book.downloadPolicy);
-    setPdfAsset(null);
-    setCoverAsset(null);
-    setSaveFeedback(null);
-  };
 
   const saveBook = async () => {
     setSaveFeedback(null);
@@ -405,17 +407,52 @@ export default function AdminScreen() {
   if (!session) {
     return (
       <AppScreen>
-        <ScrollView contentContainerStyle={styles.content}>
-          <AppHeader eyebrow="لأعضاء الفريق فقط" title="دخول الإدارة" subtitle="لا يوجد تسجيل عام؛ يستخدم الفريق حسابات Supabase المعتمدة." />
+        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+          <AppHeader
+            eyebrow="منطقة الإشراف"
+            title="تسجيل دخول الإدارة"
+            subtitle="هذه الشاشة مخصصة للمشرفين وفريق العمل لإضافة وتعديل الكتب ونشرها."
+          />
           <View style={styles.panel}>
             <Text style={styles.label}>البريد الإلكتروني</Text>
-            <TextInput {...inputProps} value={email} onChangeText={setEmail} placeholder="name@example.com" keyboardType="email-address" autoCapitalize="none" style={styles.input} returnKeyType="next" />
+            <TextInput
+              {...inputProps}
+              value={email}
+              onChangeText={setEmail}
+              placeholder="dnmrd2@gmail.com"
+              keyboardType="email-address"
+              autoCapitalize="none"
+              style={styles.input}
+              returnKeyType="next"
+            />
             <Text style={styles.label}>كلمة المرور</Text>
-            <TextInput {...inputProps} value={password} onChangeText={setPassword} placeholder="كلمة المرور" secureTextEntry autoCapitalize="none" style={styles.input} onSubmitEditing={() => void submitLogin()} returnKeyType="go" />
+            <TextInput
+              {...inputProps}
+              value={password}
+              onChangeText={setPassword}
+              placeholder="كلمة المرور"
+              secureTextEntry
+              autoCapitalize="none"
+              style={styles.input}
+              onSubmitEditing={() => void submitLogin()}
+              returnKeyType="go"
+            />
             {authError ? <Text style={styles.error}>{authError}</Text> : null}
-            <PrimaryButton title="تسجيل الدخول" onPress={() => void submitLogin()} busy={authBusy} style={{ marginTop: 12 }} />
+            <PrimaryButton
+              title="تسجيل الدخول للإدارة"
+              icon="lock-open-outline"
+              onPress={() => void submitLogin()}
+              busy={authBusy}
+              style={{ marginTop: 14 }}
+            />
           </View>
-          <PrimaryButton title="العودة للمكتبة" variant="outline" onPress={() => router.back()} style={{ marginHorizontal: 18, marginTop: 10 }} />
+          <PrimaryButton
+            title="العودة لتصفح المكتبة"
+            icon="arrow-left"
+            variant="outline"
+            onPress={() => router.back()}
+            style={{ marginHorizontal: 18, marginTop: 12 }}
+          />
         </ScrollView>
       </AppScreen>
     );

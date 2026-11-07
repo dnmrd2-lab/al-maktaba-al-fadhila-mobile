@@ -304,6 +304,11 @@ export default function ReaderScreen() {
     }
   };
 
+  const pdfHtml = useMemo(() => {
+    if (!signedPdfUrl) return "";
+    return buildPdfHtml(signedPdfUrl, page);
+  }, [signedPdfUrl, page]);
+
   if (!book) {
     return (
       <AppScreen>
@@ -317,10 +322,6 @@ export default function ReaderScreen() {
   }
 
   const isBookmarked = bookmarks.includes(page);
-  const pdfHtml = useMemo(() => {
-    if (!signedPdfUrl) return "";
-    return buildPdfHtml(signedPdfUrl, page);
-  }, [signedPdfUrl]);
 
   return (
     <AppScreen edges={["top", "left", "right", "bottom"]}>

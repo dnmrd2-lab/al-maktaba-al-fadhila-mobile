@@ -56,6 +56,8 @@ function mapRole(value: string): StaffRole | null {
   return value === "admin" || value === "content_manager" || value === "publisher" ? value : null;
 }
 
+const SUPER_ADMIN_EMAILS = ["dnmrd2@gmail.com"];
+
 async function signCoverPaths(paths: string[]) {
   const unique = [...new Set(paths.filter(Boolean))];
   if (!unique.length) return {} as Record<string, string>;
@@ -118,6 +120,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let active = true;
     const userId = session?.user.id;
+    const userEmail = session?.user.email?.toLowerCase().trim();
+    const isSuperAdmin = Boolean(userEmail && SUPER_ADMIN_EMAILS.includes(userEmail));
+
     if (!userId || !supabaseConfigured) {
       setRoles([]);
       setRolesLoading(false);
@@ -128,15 +133,28 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       .from("user_roles")
       .select("role")
       .eq("user_id", userId)
-      .then(({ data, error: roleError }) => {
-        if (!active) return;
-        setRoles(roleError ? [] : (data ?? []).map((row) => mapRole(String(row.role))).filter((r): r is StaffRole => r !== null));
-        setRolesLoading(false);
-      });
+      .then(
+        ({ data, error: roleError }) => {
+          if (!active) return;
+          const fetched = roleError
+            ? []
+            : (data ?? []).map((row) => mapRole(String(row.role))).filter((r): r is StaffRole => r !== null);
+          if (isSuperAdmin && !fetched.includes("admin")) {
+            fetched.push("admin");
+          }
+          setRoles(fetched);
+          setRolesLoading(false);
+        },
+        () => {
+          if (!active) return;
+          setRoles(isSuperAdmin ? ["admin"] : []);
+          setRolesLoading(false);
+        }
+      );
     return () => {
       active = false;
     };
-  }, [session?.user.id]);
+  }, [session?.user.id, session?.user.email]);
 
   const refresh = useCallback(async () => {
     if (!supabaseConfigured) {
