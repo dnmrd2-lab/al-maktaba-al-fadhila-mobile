@@ -40,21 +40,74 @@ function buildPdfHtml(pdfUrl: string, initialPage: number): string {
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
-    html, body { width: 100%; min-height: 100%; background: #1a221d; color: #fbfbf9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; overflow-x: hidden; }
-    #wrapper { display: flex; flex-direction: column; align-items: center; width: 100%; min-height: 100vh; padding-bottom: 24px; }
-    #canvas-container { margin-top: 12px; width: 100%; display: flex; justify-content: center; align-items: center; padding: 0 6px; }
-    canvas { max-width: 100%; height: auto !important; box-shadow: 0 6px 20px rgba(0,0,0,0.6); border-radius: 6px; background: #ffffff; }
-    #loader { display: flex; flex-direction: column; align-items: center; justify-content: center; margin-top: 80px; color: #C5A059; font-size: 14px; font-weight: 700; gap: 14px; }
-    .spinner { width: 38px; height: 38px; border: 3px solid rgba(197, 160, 89, 0.25); border-top-color: #C5A059; border-radius: 50%; animation: spin 0.8s linear infinite; }
+    html, body {
+      width: 100%;
+      min-height: 100%;
+      background: #151c17;
+      color: #fbfbf9;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Cairo", sans-serif;
+      overflow-x: hidden;
+    }
+    #wrapper {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      width: 100%;
+      min-height: 100vh;
+      padding: 10px 4px 28px;
+    }
+    #canvas-container {
+      width: 100%;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      touch-action: pan-y pinch-zoom;
+    }
+    canvas {
+      display: block;
+      box-shadow: 0 4px 22px rgba(0,0,0,0.65);
+      border-radius: 4px;
+      background: #ffffff;
+    }
+    #loader {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      margin-top: 80px;
+      color: #C5A059;
+      font-size: 14px;
+      font-weight: 700;
+      gap: 14px;
+    }
+    .spinner {
+      width: 38px;
+      height: 38px;
+      border: 3px solid rgba(197, 160, 89, 0.25);
+      border-top-color: #C5A059;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
     @keyframes spin { to { transform: rotate(360deg); } }
-    #error-box { display: none; margin: 40px 16px; padding: 18px; background: rgba(192, 57, 43, 0.2); border: 1px solid #c0392b; border-radius: 12px; color: #ff8577; text-align: center; font-size: 13px; line-height: 22px; }
+    #error-box {
+      display: none;
+      margin: 40px 16px;
+      padding: 18px;
+      background: rgba(192, 57, 43, 0.2);
+      border: 1px solid #c0392b;
+      border-radius: 12px;
+      color: #ff8577;
+      text-align: center;
+      font-size: 13px;
+      line-height: 22px;
+    }
   </style>
 </head>
 <body>
   <div id="wrapper">
     <div id="loader">
       <div class="spinner"></div>
-      <div>جارٍ تحميل صفحات الكتاب...</div>
+      <div>جارٍ تحميل صفحات الكتاب وتنسيق الخطوط...</div>
     </div>
     <div id="error-box"></div>
     <div id="canvas-container">
@@ -68,7 +121,7 @@ function buildPdfHtml(pdfUrl: string, initialPage: number): string {
     let pdfDoc = null;
     let pageRendering = false;
     let pageNumPending = null;
-    let scale = 1.6;
+    let userZoom = 1.0;
     const canvas = document.getElementById('pdf-render-canvas');
     const ctx = canvas.getContext('2d');
 
@@ -87,13 +140,16 @@ function buildPdfHtml(pdfUrl: string, initialPage: number): string {
       pageRendering = true;
 
       pdfDoc.getPage(num).then(function(page) {
-        const dpr = window.devicePixelRatio || 1.5;
-        const viewport = page.getViewport({ scale: scale });
+        const dpr = Math.min(window.devicePixelRatio || 2, 3);
+        const containerWidth = Math.max(window.innerWidth - 12, 320);
+        const unscaledViewport = page.getViewport({ scale: 1.0 });
+        const fitScale = (containerWidth / unscaledViewport.width) * userZoom;
+        const viewport = page.getViewport({ scale: fitScale });
         
-        canvas.height = viewport.height * dpr;
-        canvas.width = viewport.width * dpr;
-        canvas.style.width = viewport.width + 'px';
-        canvas.style.height = viewport.height + 'px';
+        canvas.width = Math.floor(viewport.width * dpr);
+        canvas.height = Math.floor(viewport.height * dpr);
+        canvas.style.width = Math.floor(viewport.width) + 'px';
+        canvas.style.height = Math.floor(viewport.height) + 'px';
 
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
@@ -101,15 +157,15 @@ function buildPdfHtml(pdfUrl: string, initialPage: number): string {
           canvasContext: ctx,
           viewport: viewport
         };
-        const renderTask = page.render(renderContext);
-
-        renderTask.promise.then(function() {
-          pageRendering = false;
-          if (pageNumPending !== null) {
-            renderPage(pageNumPending);
-            pageNumPending = null;
-          }
-        });
+        return page.render(renderContext).promise;
+      }).then(function() {
+        pageRendering = false;
+        const loader = document.getElementById('loader');
+        if (loader) loader.style.display = 'none';
+        if (pageNumPending !== null) {
+          renderPage(pageNumPending);
+          pageNumPending = null;
+        }
       }).catch(function(err) {
         pageRendering = false;
         console.error('Page render error:', err);
@@ -135,7 +191,7 @@ function buildPdfHtml(pdfUrl: string, initialPage: number): string {
     };
 
     window.changeScale = function(delta) {
-      scale = Math.min(Math.max(scale + delta, 0.8), 3.5);
+      userZoom = Math.min(Math.max(userZoom + delta, 0.75), 3.0);
       if (pdfDoc) queueRenderPage(currentPage);
     };
 
@@ -147,7 +203,10 @@ function buildPdfHtml(pdfUrl: string, initialPage: number): string {
       const loadingTask = pdfjsLib.getDocument({
         url: pdfUrl,
         cMapUrl: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/cmaps/',
-        cMapPacked: true
+        cMapPacked: true,
+        standardFontDataUrl: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/standard_fonts/',
+        disableFontFace: true,
+        enableXfa: false
       });
 
       loadingTask.promise.then(function(pdf) {
@@ -416,7 +475,7 @@ export default function ReaderScreen() {
             <WebView
               ref={webViewRef}
               originWhitelist={["*"]}
-              source={{ html: pdfHtml }}
+              source={{ html: pdfHtml, baseUrl: "https://localhost" }}
               onMessage={handleWebViewMessage}
               style={styles.webView}
               javaScriptEnabled
