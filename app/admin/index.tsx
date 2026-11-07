@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Platform, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import * as DocumentPicker from "expo-document-picker";
 import { File as ExpoFile } from "expo-file-system";
@@ -86,6 +86,7 @@ async function uploadLibraryAsset(
 
 export default function AdminScreen() {
   const router = useRouter();
+  const { editBookId } = useLocalSearchParams<{ editBookId?: string }>();
   const {
     books,
     folders,
@@ -117,6 +118,7 @@ export default function AdminScreen() {
   const [pdfAsset, setPdfAsset] = useState<DocumentPicker.DocumentPickerAsset | null>(null);
   const [coverAsset, setCoverAsset] = useState<DocumentPicker.DocumentPickerAsset | null>(null);
   const [editingBookId, setEditingBookId] = useState<string | null>(null);
+  const [downloadPolicy, setDownloadPolicy] = useState<"READ_ONLY" | "DOWNLOAD_ALLOWED">("READ_ONLY");
   const [saveFeedback, setSaveFeedback] = useState<SaveFeedback | null>(null);
   const [staffUsers, setStaffUsers] = useState<ManagedStaffUser[]>([]);
   const [staffUsersLoading, setStaffUsersLoading] = useState(false);
@@ -137,6 +139,16 @@ export default function AdminScreen() {
   useEffect(() => {
     if (!folderId && folders[0]) setFolderId(folders[0].id);
   }, [folders, folderId]);
+
+  useEffect(() => {
+    if (editBookId && books.length > 0) {
+      const target = books.find((b) => b.id === editBookId);
+      if (target) {
+        startEditing(target);
+      }
+    }
+  }, [editBookId, books]);
+
 
   const loadStaffUsers = useCallback(async () => {
     if (!isAdmin) return;
@@ -208,6 +220,7 @@ export default function AdminScreen() {
     setCoverAsset(null);
     setEditingBookId(null);
     setCoverKey("green");
+    setDownloadPolicy("READ_ONLY");
   };
 
   const startEditing = (book: Book) => {
@@ -223,6 +236,7 @@ export default function AdminScreen() {
     setPages(book.pages ? String(book.pages) : "");
     setFolderId(book.folderId);
     setCoverKey(book.coverKey);
+    setDownloadPolicy(book.downloadPolicy);
     setPdfAsset(null);
     setCoverAsset(null);
     setSaveFeedback(null);
@@ -274,7 +288,7 @@ export default function AdminScreen() {
         cover_url: nextCoverPath,
         pdf_url: nextPdfPath,
         pages: pages ? Number(pages) : 0,
-        download_policy: editingBook?.downloadPolicy ?? "READ_ONLY",
+        download_policy: downloadPolicy,
         updated_at: new Date().toISOString(),
       };
 
@@ -431,7 +445,12 @@ export default function AdminScreen() {
             <Text style={styles.label}>الوصف أو جزء من المسودة</Text><TextInput {...inputProps} value={description} onChangeText={setDescription} placeholder="نبذة مختصرة أو ملاحظات المسودة" multiline style={[styles.input, styles.multiline]} />
             <Text style={styles.label}>عدد الصفحات</Text><TextInput {...inputProps} value={pages} onChangeText={setPages} placeholder="اختياري" keyboardType="number-pad" style={styles.input} />
             <Text style={styles.label}>المجلد</Text><View style={styles.pills}>{folders.map((folder) => <Pill key={folder.id} label={folder.name} selected={folderId === folder.id} onPress={() => setFolderId(folder.id)} />)}</View>
+            
             <Text style={styles.label}>لون الغلاف البديل</Text><View style={styles.pills}>{(["green", "cream", "teal"] as const).map((key) => <Pill key={key} label={key === "green" ? "أخضر" : key === "cream" ? "عاجي" : "فيروزي"} selected={coverKey === key} onPress={() => setCoverKey(key)} />)}</View>
+            <Text style={styles.label}>سياسة التنزيل</Text><View style={styles.pills}>
+              <Pill label="قراءة فقط من الواجهة" selected={downloadPolicy === "READ_ONLY"} onPress={() => setDownloadPolicy("READ_ONLY")} />
+              <Pill label="السماح بتنزيل النسخة" selected={downloadPolicy === "DOWNLOAD_ALLOWED"} onPress={() => setDownloadPolicy("DOWNLOAD_ALLOWED")} />
+            </View>
             <PrimaryButton title={coverAsset ? `صورة: ${coverAsset.name}` : editingBook?.coverPath ? "استبدال صورة الغلاف (اختياري)" : "اختيار صورة غلاف (اختياري)"} variant="outline" onPress={() => void chooseCover()} style={{ marginTop: 12 }} />
             <PrimaryButton title={pdfAsset ? `PDF: ${pdfAsset.name}` : editingBook?.pdfPath ? "استبدال ملف PDF (اختياري)" : "اختيار ملف PDF (اختياري)"} variant="outline" onPress={() => void choosePdf()} style={{ marginTop: 8 }} />
             <Text style={styles.formNote}>صور الأغلفة بصيغ JPG أو PNG أو WebP وبحد أقصى 5 ميجابايت. استبدال ملف يحذف النسخة السابقة بعد نجاح حفظ التعديل.</Text>
