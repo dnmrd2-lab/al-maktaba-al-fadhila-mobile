@@ -3,30 +3,37 @@ export type PickedUploadAsset = {
   file?: Blob | null;
 };
 
+export type LibraryUploadBody = Blob | ArrayBuffer;
+
 export type LibraryImageExtension = "jpg" | "png" | "webp";
 
 /**
- * DocumentPicker exposes a real browser File on web. Native platforms instead
- * need a platform file wrapper supplied by the caller.
+ * Supabase Storage expects ArrayBuffer for React Native uploads. Web uploads
+ * can use the File/Blob supplied by DocumentPicker.
  */
 export async function resolveBookUploadBody(
   asset: PickedUploadAsset,
   platform: string,
-  makeNativeFile: (uri: string) => Blob,
-): Promise<Blob> {
+  makeNativeFile: (uri: string) => Promise<ArrayBuffer> | ArrayBuffer,
+): Promise<LibraryUploadBody> {
+  let body: LibraryUploadBody;
   if (platform !== "web") {
-    return makeNativeFile(asset.uri);
+    body = await makeNativeFile(asset.uri);
+  } else if (asset.file) {
+    body = asset.file;
+  } else {
+    const response = await fetch(asset.uri);
+    if (!response.ok) {
+      throw new Error("تعذر قراءة الملف المختار في المتصفح.");
+    }
+    body = await response.blob();
   }
 
-  if (asset.file) {
-    return asset.file;
+  const size = body instanceof ArrayBuffer ? body.byteLength : body.size;
+  if (size <= 0) {
+    throw new Error("الملف المختار فارغ أو تعذرت قراءته. اختر ملفًا صالحًا من الجهاز ثم حاول مجددًا.");
   }
-
-  const response = await fetch(asset.uri);
-  if (!response.ok) {
-    throw new Error("تعذر قراءة الملف المختار في المتصفح.");
-  }
-  return response.blob();
+  return body;
 }
 
 /** Create an ASCII-only object key that never contains the user's filename. */

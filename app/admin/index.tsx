@@ -75,7 +75,7 @@ async function uploadLibraryAsset(
   const uploadBody = await resolveBookUploadBody(
     asset,
     Platform.OS,
-    (uri) => new ExpoFile(uri) as unknown as Blob,
+    async (uri) => await new ExpoFile(uri).arrayBuffer(),
   );
   const { error } = await supabase.storage.from("library").upload(path, uploadBody, {
     contentType,

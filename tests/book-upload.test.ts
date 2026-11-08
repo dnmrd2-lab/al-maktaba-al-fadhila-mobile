@@ -8,7 +8,7 @@ afterEach(() => {
 describe("resolveBookUploadBody", () => {
   it("uses the browser File supplied by DocumentPicker on web", async () => {
     const browserFile = new Blob(["pdf-bytes"], { type: "application/pdf" });
-    const makeNativeFile = vi.fn(() => new Blob());
+    const makeNativeFile = vi.fn(() => new ArrayBuffer(1));
 
     const result = await resolveBookUploadBody(
       { uri: "blob:https://preview.example/file-id", file: browserFile },
@@ -20,13 +20,13 @@ describe("resolveBookUploadBody", () => {
     expect(makeNativeFile).not.toHaveBeenCalled();
   });
 
-  it("wraps the local URI on native platforms", async () => {
-    const nativeFile = new Blob(["native-pdf"]);
+  it("reads native files as ArrayBuffer for Supabase Storage", async () => {
+    const nativeFile = new Uint8Array([1, 2, 3]).buffer;
     const makeNativeFile = vi.fn(() => nativeFile);
 
     const result = await resolveBookUploadBody(
       { uri: "file:///documents/book.pdf" },
-      "ios",
+      "android",
       makeNativeFile,
     );
 
@@ -42,11 +42,25 @@ describe("resolveBookUploadBody", () => {
     const result = await resolveBookUploadBody(
       { uri: "blob:https://preview.example/file-id" },
       "web",
-      () => new Blob(),
+      () => new ArrayBuffer(1),
     );
 
     expect(result).toBe(fetchedBlob);
     expect(fetchMock).toHaveBeenCalledWith("blob:https://preview.example/file-id");
+  });
+
+  it("rejects empty native and browser files before upload", async () => {
+    await expect(
+      resolveBookUploadBody({ uri: "file:///documents/empty.pdf" }, "android", () => new ArrayBuffer(0)),
+    ).rejects.toThrow("الملف المختار فارغ");
+
+    await expect(
+      resolveBookUploadBody(
+        { uri: "blob:https://preview.example/empty", file: new Blob() },
+        "web",
+        () => new ArrayBuffer(1),
+      ),
+    ).rejects.toThrow("الملف المختار فارغ");
   });
 });
 
