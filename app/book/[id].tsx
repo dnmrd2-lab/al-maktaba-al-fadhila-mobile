@@ -38,7 +38,8 @@ export default function BookDetailScreen() {
     );
   }
 
-  const cover = book.coverUri ? { uri: book.coverUri } : covers[book.coverKey];
+  const [imageError, setImageError] = React.useState(false);
+  const cover = !imageError && book.coverUri ? { uri: book.coverUri } : covers[book.coverKey];
   const folder = folders.find((item) => item.id === book.folderId);
   const savedPage = local.progress[book.id];
   const isFavorite = local.favorites.includes(book.id);
@@ -58,7 +59,7 @@ export default function BookDetailScreen() {
               <Text style={styles.statusText}>متاح للقراءة المباشرة</Text>
             </View>
           </View>
-          <Image source={cover} resizeMode="cover" style={styles.cover} />
+          <Image source={cover} resizeMode="cover" style={styles.cover} onError={() => setImageError(true)} />
         </View>
 
         {/* Action Row: Reading and Bookmarking */}

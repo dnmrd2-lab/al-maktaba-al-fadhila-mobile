@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import { Image, Pressable, StyleSheet, Text, View } from "react-native";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import type { Book } from "../lib/app-context";
@@ -12,7 +12,8 @@ const fallbackCovers = {
 };
 
 export function BookCard({ book, favorite, onPress, onFavorite, readingPage }: { book: Book; favorite?: boolean; onPress: () => void; onFavorite?: () => void; readingPage?: number }) {
-  const cover = book.coverUri ? { uri: book.coverUri } : fallbackCovers[book.coverKey];
+  const [imageError, setImageError] = useState(false);
+  const cover = !imageError && book.coverUri ? { uri: book.coverUri } : fallbackCovers[book.coverKey];
   return (
     <View style={styles.card}>
       {onFavorite ? (
@@ -31,7 +32,7 @@ export function BookCard({ book, favorite, onPress, onFavorite, readingPage }: {
             <MaterialCommunityIcons name="chevron-left" size={17} color={palette.green} />
           </View>
         </View>
-        <Image source={cover} style={styles.cover} resizeMode="cover" />
+        <Image source={cover} style={styles.cover} resizeMode="cover" onError={() => setImageError(true)} />
       </Pressable>
     </View>
   );
