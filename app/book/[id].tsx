@@ -79,6 +79,17 @@ export default function BookDetailScreen() {
           />
         </View>
 
+        {/* Audio TTS Listening Button */}
+        <View style={styles.listenRow}>
+          <PrimaryButton
+            title="استماع صوتي للكتاب (TTS)"
+            icon="volume-high"
+            variant="secondary"
+            onPress={() => router.push({ pathname: "/reader/[id]", params: { id: book.id, autoplay: "true" } })}
+            style={styles.listenButton}
+          />
+        </View>
+
         {/* Admin Management Section */}
         {canManageBooks ? (
           <View style={styles.adminBox}>
@@ -165,6 +176,14 @@ const styles = StyleSheet.create({
   favButton: {
     minWidth: 100,
     minHeight: 52,
+  },
+  listenRow: {
+    marginHorizontal: 18,
+    marginBottom: 14,
+  },
+  listenButton: {
+    width: "100%",
+    minHeight: 48,
   },
 
   adminBox: {

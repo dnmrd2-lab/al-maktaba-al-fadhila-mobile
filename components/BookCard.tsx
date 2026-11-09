@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { Image, Pressable, StyleSheet, Text, View } from "react-native";
+import { useRouter } from "expo-router";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import type { Book } from "../lib/app-context";
 import { formatPages } from "../lib/library-utils";
@@ -16,34 +17,62 @@ export function BookCard({
   favorite,
   onPress,
   onFavorite,
+  onListen,
   readingPage,
 }: {
   book: Book;
   favorite?: boolean;
   onPress: () => void;
   onFavorite?: () => void;
+  onListen?: () => void;
   readingPage?: number;
 }) {
+  const router = useRouter();
   const [imageError, setImageError] = useState(false);
   const cover = !imageError && book.coverUri ? { uri: book.coverUri } : fallbackCovers[book.coverKey];
 
+  const handleListen = () => {
+    if (onListen) {
+      onListen();
+    } else {
+      router.push({ pathname: "/reader/[id]", params: { id: book.id, autoplay: "true" } });
+    }
+  };
+
   return (
     <View style={styles.card}>
-      {onFavorite ? (
+      <View style={styles.topActions}>
+        {onFavorite ? (
+          <Pressable
+            onPress={onFavorite}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={favorite ? "إزالة من المفضلة" : "إضافة إلى المفضلة"}
+            style={styles.actionBtn}
+          >
+            <MaterialCommunityIcons
+              name={favorite ? "heart" : "heart-outline"}
+              size={18}
+              color={favorite ? palette.danger : palette.muted}
+            />
+          </Pressable>
+        ) : null}
+
         <Pressable
-          onPress={onFavorite}
-          hitSlop={10}
+          onPress={handleListen}
+          hitSlop={8}
           accessibilityRole="button"
-          accessibilityLabel={favorite ? "إزالة من المفضلة" : "إضافة إلى المفضلة"}
-          style={styles.favorite}
+          accessibilityLabel={`استمع صوتياً لكتاب: ${book.title}`}
+          style={[styles.actionBtn, styles.listenBtn]}
         >
           <MaterialCommunityIcons
-            name={favorite ? "heart" : "heart-outline"}
-            size={21}
-            color={favorite ? palette.danger : palette.muted}
+            name="volume-high"
+            size={18}
+            color={palette.green}
           />
         </Pressable>
-      ) : null}
+      </View>
+
       <Pressable
         onPress={onPress}
         style={({ pressed }) => [styles.body, pressed && { opacity: 0.8 }]}
@@ -70,6 +99,10 @@ export function BookCard({
           ) : null}
           <View style={styles.footer}>
             <Text style={styles.pages}>{formatPages(book.pages)}</Text>
+            <View style={styles.listenLabel}>
+              <MaterialCommunityIcons name="headphones" size={13} color={palette.green} />
+              <Text style={styles.listenLabelText}>استماع صوتي</Text>
+            </View>
             <MaterialCommunityIcons name="chevron-left" size={17} color={palette.green} />
           </View>
         </View>
@@ -89,10 +122,33 @@ const styles = StyleSheet.create({
     borderColor: palette.border,
     overflow: "hidden",
   },
+  topActions: {
+    position: "absolute",
+    zIndex: 2,
+    left: 11,
+    top: 11,
+    flexDirection: "row",
+    gap: 6,
+  },
+  actionBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: palette.background,
+    borderWidth: 1,
+    borderColor: palette.border,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  listenBtn: {
+    backgroundColor: palette.greenSoft,
+    borderColor: palette.green,
+  },
   body: {
     minHeight: 142,
     padding: 14,
-    paddingRight: 52,
+    paddingRight: 14,
+    paddingLeft: 84,
     flexDirection: "row-reverse",
     alignItems: "center",
     gap: 14,
@@ -133,16 +189,14 @@ const styles = StyleSheet.create({
     marginTop: 9,
   },
   pages: { color: palette.muted, fontSize: 11 },
-  favorite: {
-    position: "absolute",
-    zIndex: 2,
-    left: 13,
-    top: 13,
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: palette.background,
+  listenLabel: {
+    flexDirection: "row-reverse",
     alignItems: "center",
-    justifyContent: "center",
+    gap: 4,
+    backgroundColor: palette.greenSoft,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 6,
   },
+  listenLabelText: { color: palette.greenDark, fontSize: 10, fontWeight: "800" },
 });

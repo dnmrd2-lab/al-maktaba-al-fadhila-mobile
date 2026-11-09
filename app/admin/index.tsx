@@ -1,10 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, Platform, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Alert, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import * as DocumentPicker from "expo-document-picker";
 import { AppHeader, AppScreen, FeedbackPanel, Pill, PrimaryButton } from "../../components/ui";
-import { type Book, type DownloadPolicy, type StaffRole, useApp } from "../../lib/app-context";
+import { type Book, type DownloadPolicy, type Folder, type StaffRole, useApp } from "../../lib/app-context";
 import {
   createBookStoragePath,
   createCoverStoragePath,
@@ -118,6 +118,41 @@ export default function AdminScreen() {
   const [coverKey, setCoverKey] = useState<"green" | "cream" | "teal">("green");
   const [downloadPolicy, setDownloadPolicy] = useState<DownloadPolicy>("READ_ONLY");
   const [pdfAsset, setPdfAsset] = useState<DocumentPicker.DocumentPickerAsset | null>(null);
+
+  const [dbFolders, setDbFolders] = useState<Folder[]>(folders);
+
+  useEffect(() => {
+    if (folders.length > 0) {
+      setDbFolders(folders);
+    } else {
+      void supabase
+        .from("folders")
+        .select("id, slug, name, description, locked, sort")
+        .order("sort")
+        .then(({ data }) => {
+          if (data && data.length > 0) {
+            setDbFolders(
+              data.map((f: any) => ({
+                id: f.id,
+                slug: f.slug,
+                name: f.name,
+                description: f.description || "",
+                locked: Boolean(f.locked),
+                sort: f.sort ?? 0,
+              })),
+            );
+          }
+        });
+    }
+  }, [folders]);
+
+  const activeFolders = dbFolders.length > 0 ? dbFolders : folders;
+
+  useEffect(() => {
+    if (!folderId && activeFolders.length > 0) {
+      setFolderId(activeFolders[0].id);
+    }
+  }, [activeFolders, folderId]);
   const [coverAsset, setCoverAsset] = useState<DocumentPicker.DocumentPickerAsset | null>(null);
   const [saving, setSaving] = useState(false);
   const [editingBookId, setEditingBookId] = useState<string | null>(null);
@@ -146,7 +181,7 @@ export default function AdminScreen() {
     setDescription("");
     setCategory("");
     setPages("");
-    setFolderId(folders[0]?.id ?? "");
+    setFolderId(activeFolders[0]?.id ?? "");
     setPdfAsset(null);
     setCoverAsset(null);
     setEditingBookId(null);
@@ -244,8 +279,9 @@ export default function AdminScreen() {
 
   const saveBook = async () => {
     setSaveFeedback(null);
-    if (!title.trim() || !folderId) {
-      setSaveFeedback({ tone: "error", message: "بيانات ناقصة: أدخل عنوان الكتاب واختر مجلدًا." });
+    const targetFolderId = folderId || (activeFolders.length > 0 ? activeFolders[0].id : "");
+    if (!title.trim() || !targetFolderId) {
+      setSaveFeedback({ tone: "error", message: "بيانات ناقصة: أدخل عنوان الكتاب واختر مجلدًا صالحًا." });
       return;
     }
     if (pages && (!Number.isInteger(Number(pages)) || Number(pages) < 0)) {
@@ -281,7 +317,7 @@ export default function AdminScreen() {
       }
 
       const bookData = {
-        folder_id: folderId,
+        folder_id: targetFolderId,
         title: title.trim(),
         author: author.trim(),
         description: description.trim(),
@@ -595,11 +631,48 @@ export default function AdminScreen() {
             <Text style={styles.label}>عدد الصفحات (اختياري)</Text>
             <TextInput {...inputProps} value={pages} onChangeText={setPages} placeholder="120" keyboardType="number-pad" style={styles.input} />
 
-            <Text style={styles.label}>المجلد / القسم التابع له</Text>
-            <View style={styles.pills}>
-              {folders.map((f) => (
-                <Pill key={f.id} label={f.name} selected={folderId === f.id} onPress={() => setFolderId(f.id)} />
-              ))}
+            <View style={styles.folderSection}>
+              <View style={styles.folderHeader}>
+                <Text style={styles.label}>المجلد / القسم التابع له (إلزامي)</Text>
+                {activeFolders.find((f) => f.id === (folderId || activeFolders[0]?.id)) ? (
+                  <View style={styles.selectedBadge}>
+                    <MaterialCommunityIcons name="folder-check" size={14} color={palette.greenDark} />
+                    <Text style={styles.selectedBadgeText}>
+                      المختار: {activeFolders.find((f) => f.id === (folderId || activeFolders[0]?.id))?.name}
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+
+              <View style={styles.folderPills}>
+                {activeFolders.map((f) => {
+                  const isSelected = (folderId || activeFolders[0]?.id) === f.id;
+                  return (
+                    <Pressable
+                      key={f.id}
+                      onPress={() => setFolderId(f.id)}
+                      style={[styles.folderPill, isSelected && styles.folderPillActive]}
+                      accessibilityRole="button"
+                      accessibilityLabel={`اختيار مجلد: ${f.name}`}
+                    >
+                      <MaterialCommunityIcons
+                        name={isSelected ? "folder-open" : "folder"}
+                        size={18}
+                        color={isSelected ? palette.white : palette.greenDark}
+                      />
+                      <Text style={[styles.folderPillText, isSelected && styles.folderPillTextActive]}>
+                        {f.name}
+                      </Text>
+                      {isSelected ? (
+                        <MaterialCommunityIcons name="check" size={16} color={palette.white} />
+                      ) : null}
+                    </Pressable>
+                  );
+                })}
+              </View>
+              {activeFolders.length === 0 ? (
+                <Text style={styles.formNote}>جارٍ تحميل الأقسام من قاعدة البيانات...</Text>
+              ) : null}
             </View>
 
             <Text style={styles.label}>سياسة التنزيل للجمهور</Text>
@@ -883,6 +956,36 @@ const styles = StyleSheet.create({
   roleRow: { flexDirection: "row-reverse", flexWrap: "wrap", gap: 7, marginHorizontal: 18, marginBottom: 4 },
   rolePill: { borderRadius: 999, backgroundColor: palette.greenSoft, paddingHorizontal: 11, paddingVertical: 7 },
   roleText: { color: palette.green, fontSize: 11, fontWeight: "800" },
+  folderSection: { marginTop: 4, marginBottom: 12 },
+  folderHeader: { flexDirection: "row-reverse", alignItems: "center", justifyContent: "space-between", marginBottom: 6 },
+  selectedBadge: {
+    flexDirection: "row-reverse",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: palette.greenSoft,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+  },
+  selectedBadgeText: { color: palette.greenDark, fontSize: 11, fontWeight: "800" },
+  folderPills: { flexDirection: "row-reverse", flexWrap: "wrap", gap: 8 },
+  folderPill: {
+    flexDirection: "row-reverse",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: radius.control,
+    backgroundColor: palette.surfaceWarm,
+    borderWidth: 1,
+    borderColor: palette.border,
+  },
+  folderPillActive: {
+    backgroundColor: palette.greenDark,
+    borderColor: palette.greenDark,
+  },
+  folderPillText: { color: palette.ink, fontSize: 13, fontWeight: "700" },
+  folderPillTextActive: { color: palette.white, fontWeight: "800" },
   pills: { flexDirection: "row-reverse", flexWrap: "wrap", gap: 7 },
   formNote: { color: palette.muted, fontSize: 11, lineHeight: 18, textAlign: "right", marginTop: 9 },
   listHeading: { flexDirection: "row-reverse", alignItems: "center", justifyContent: "flex-start", gap: 7 },

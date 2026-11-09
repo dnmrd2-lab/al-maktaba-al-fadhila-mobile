@@ -20,6 +20,12 @@ import { useApp } from "../../lib/app-context";
 import { deleteLocalBookCache, ensureValidLocalPdf, useLocalLibrary } from "../../lib/local-library";
 import { canOfferDownload } from "../../lib/library-utils";
 import { extractStoragePath } from "../../lib/book-upload";
+import {
+  isSpeaking,
+  speakArabicText,
+  startArabicVoiceRecognition,
+  stopArabicSpeech,
+} from "../../lib/speech-service";
 import { supabase } from "../../lib/supabase";
 import { palette } from "../../lib/theme";
 
@@ -158,6 +164,18 @@ function buildPdfHtml(pdfUrl: string, initialPage: number): string {
           canvasContext: ctx,
           viewport: viewport
         };
+
+        // Extract text for TTS reading
+        page.getTextContent().then(function(tc) {
+          if (tc && tc.items) {
+            const strings = tc.items.map(function(it) { return it.str; }).filter(Boolean);
+            const text = strings.join(' ').replace(/\\s+/g, ' ').trim();
+            notifyRN({ type: 'pageText', page: num, text: text });
+          }
+        }).catch(function(e) {
+          // ignore text extraction errors
+        });
+
         return page.render(renderContext).promise;
       }).then(function() {
         pageRendering = false;
@@ -194,6 +212,48 @@ function buildPdfHtml(pdfUrl: string, initialPage: number): string {
     window.changeScale = function(delta) {
       userZoom = Math.min(Math.max(userZoom + delta, 0.75), 3.0);
       if (pdfDoc) queueRenderPage(currentPage);
+    };
+
+    window.searchInPdf = function(query) {
+      if (!pdfDoc || !query) {
+        notifyRN({ type: 'searchResults', query: query || '', matches: [] });
+        return;
+      }
+      const q = String(query).trim().toLowerCase();
+      if (!q) {
+        notifyRN({ type: 'searchResults', query: '', matches: [] });
+        return;
+      }
+      const matches = [];
+      let checked = 0;
+      const total = pdfDoc.numPages;
+      for (let i = 1; i <= total; i++) {
+        (function(pageNum) {
+          pdfDoc.getPage(pageNum).then(function(p) {
+            return p.getTextContent();
+          }).then(function(tc) {
+            const fullText = tc.items.map(function(it) { return it.str; }).join(' ');
+            const lower = fullText.toLowerCase();
+            let pos = lower.indexOf(q);
+            if (pos !== -1) {
+              const start = Math.max(0, pos - 35);
+              const end = Math.min(fullText.length, pos + q.length + 35);
+              const snippet = (start > 0 ? '...' : '') + fullText.substring(start, end).trim() + (end < fullText.length ? '...' : '');
+              matches.push({ page: pageNum, snippet: snippet });
+            }
+            checked++;
+            if (checked === total) {
+              matches.sort(function(a, b) { return a.page - b.page; });
+              notifyRN({ type: 'searchResults', query: query, matches: matches.slice(0, 40) });
+            }
+          }).catch(function() {
+            checked++;
+            if (checked === total) {
+              notifyRN({ type: 'searchResults', query: query, matches: matches });
+            }
+          });
+        })(i);
+      }
     };
 
     function startLoad() {
@@ -242,7 +302,7 @@ function buildPdfHtml(pdfUrl: string, initialPage: number): string {
 }
 
 export default function ReaderScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, autoplay } = useLocalSearchParams<{ id: string; autoplay?: string }>();
   const router = useRouter();
   const { books, isLoading, canManageBooks } = useApp();
   const local = useLocalLibrary();
@@ -267,6 +327,19 @@ export default function ReaderScreen() {
   const page = readingPosition?.bookId === id ? readingPosition.page : savedPage;
   const bookmarks = local.bookmarks[id] ?? [];
 
+  // Speech TTS state
+  const [isSpeakingActive, setIsSpeakingActive] = useState(false);
+  const [speechRate, setSpeechRate] = useState<number>(0.9);
+  const [pageTextMap, setPageTextMap] = useState<Record<number, string>>({});
+
+  // In-book Text & Voice Search state
+  const [searchModalOpen, setSearchModalOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchResults, setSearchResults] = useState<{ page: number; snippet: string }[]>([]);
+  const [isVoiceSearching, setIsVoiceSearching] = useState(false);
+  const [voiceSearchStatus, setVoiceSearchStatus] = useState<string | null>(null);
+
   useEffect(() => {
     setPageInput(String(page));
   }, [id, page]);
@@ -281,7 +354,6 @@ export default function ReaderScreen() {
     setLoadingPdf(true);
     setPdfError(null);
 
-    // Resolve cloud URL: if it is already full URL use it; otherwise get public URL
     let cloudUrl = rawPath;
     if (!/^https?:\/\//i.test(rawPath)) {
       const storageKey = extractStoragePath(rawPath) ?? rawPath;
@@ -296,7 +368,6 @@ export default function ReaderScreen() {
     }
 
     try {
-      // Validate local cache and fetch valid file or stream directly
       const result = await ensureValidLocalPdf(book.id, cloudUrl);
       setPdfDisplayUrl(result.uri || cloudUrl);
     } catch {
@@ -320,7 +391,67 @@ export default function ReaderScreen() {
     if (notifyWebView && book?.pdfPath && webViewRef.current) {
       webViewRef.current.injectJavaScript(`window.goToPage && window.goToPage(${nextPage}); true;`);
     }
+
+    // If speech was active, continue reading new page
+    if (isSpeakingActive) {
+      void speakCurrentPage(nextPage);
+    }
   };
+
+  const speakCurrentPage = useCallback(
+    async (targetPageNum?: number) => {
+      const targetPage = targetPageNum ?? page;
+      const extracted = pageTextMap[targetPage];
+      let textToRead = "";
+
+      if (extracted && extracted.trim().length > 10) {
+        textToRead = extracted;
+      } else if (!book?.pdfPath) {
+        textToRead = pages[(targetPage - 1) % pages.length];
+      } else {
+        textToRead = `${bookTitle}. ${book?.author ? `لـ ${book.author}.` : ""} ${book?.description || ""}. صفحة رقم ${targetPage}.`;
+      }
+
+      setIsSpeakingActive(true);
+      await speakArabicText(textToRead, {
+        rate: speechRate,
+        onStart: () => setIsSpeakingActive(true),
+        onDone: () => setIsSpeakingActive(false),
+        onError: () => setIsSpeakingActive(false),
+      });
+    },
+    [page, pageTextMap, book?.pdfPath, book?.author, book?.description, bookTitle, pages, speechRate],
+  );
+
+  const stopReading = async () => {
+    setIsSpeakingActive(false);
+    await stopArabicSpeech();
+  };
+
+  const toggleSpeech = async () => {
+    if (isSpeakingActive) {
+      await stopReading();
+    } else {
+      await speakCurrentPage();
+    }
+  };
+
+  // Autoplay on mount when ?autoplay=true is supplied
+  useEffect(() => {
+    if (autoplay === "true" && book) {
+      const timer = setTimeout(() => {
+        void speakCurrentPage();
+      }, 750);
+      return () => clearTimeout(timer);
+    }
+  }, [autoplay, book, speakCurrentPage]);
+
+  // Cleanup speech on unmount
+  useEffect(() => {
+    return () => {
+      void stopArabicSpeech();
+    };
+  }, []);
 
   const handleWebViewMessage = (event: WebViewMessageEvent) => {
     try {
@@ -329,6 +460,11 @@ export default function ReaderScreen() {
         setCurrentPage(data.page, false);
       } else if (data.type === "totalLoaded" && typeof data.total === "number") {
         setDetectedTotal(data.total);
+      } else if (data.type === "pageText" && typeof data.page === "number" && typeof data.text === "string") {
+        setPageTextMap((prev) => ({ ...prev, [data.page]: data.text }));
+      } else if (data.type === "searchResults") {
+        setSearchResults(Array.isArray(data.matches) ? data.matches : []);
+        setSearchLoading(false);
       } else if (data.type === "error") {
         const msg = String(data.message || "");
         if (msg.includes("0") || msg.includes("empty") || msg.includes("signature")) {
@@ -337,6 +473,74 @@ export default function ReaderScreen() {
       }
     } catch {
       // Ignore non-json messages
+    }
+  };
+
+  // Execute in-book search
+  const executeInBookSearch = useCallback(
+    (queryToSearch: string) => {
+      const q = queryToSearch.trim();
+      if (!q) {
+        setSearchResults([]);
+        return;
+      }
+      setSearchLoading(true);
+
+      if (book?.pdfPath && webViewRef.current) {
+        webViewRef.current.injectJavaScript(`window.searchInPdf && window.searchInPdf(${JSON.stringify(q)}); true;`);
+      } else {
+        const matches: { page: number; snippet: string }[] = [];
+        pages.forEach((pText, idx) => {
+          const pageNum = idx + 1;
+          const lower = pText.toLowerCase();
+          const pos = lower.indexOf(q.toLowerCase());
+          if (pos !== -1) {
+            const start = Math.max(0, pos - 35);
+            const end = Math.min(pText.length, pos + q.length + 35);
+            const snippet =
+              (start > 0 ? "..." : "") +
+              pText.substring(start, end).trim() +
+              (end < pText.length ? "..." : "");
+            matches.push({ page: pageNum, snippet });
+          }
+        });
+        setSearchResults(matches);
+        setSearchLoading(false);
+      }
+    },
+    [book?.pdfPath, pages],
+  );
+
+  // In-book voice search recognition
+  const toggleInBookVoiceSearch = () => {
+    if (isVoiceSearching) {
+      setIsVoiceSearching(false);
+      setVoiceSearchStatus(null);
+      return;
+    }
+
+    setVoiceSearchStatus("جارٍ الاستماع... انطق كلمة للبحث داخل الكتاب");
+    setIsVoiceSearching(true);
+
+    const session = startArabicVoiceRecognition({
+      onStart: () => setIsVoiceSearching(true),
+      onResult: (transcript) => {
+        setIsVoiceSearching(false);
+        const clean = transcript.trim();
+        setSearchQuery(clean);
+        setVoiceSearchStatus(`تم البحث عن: «${clean}»`);
+        executeInBookSearch(clean);
+      },
+      onError: (err) => {
+        setIsVoiceSearching(false);
+        setVoiceSearchStatus(`تعذر الاستماع: ${err}`);
+      },
+      onEnd: () => setIsVoiceSearching(false),
+    });
+
+    if (!session) {
+      setIsVoiceSearching(false);
+      setVoiceSearchStatus("يمكنك استخدام الميكروفون في لوحة المفاتيح لإملاء كلمات البحث.");
     }
   };
 
@@ -368,7 +572,7 @@ export default function ReaderScreen() {
       const { data, error } = await supabase.storage.from("library").createSignedUrl(
         storageKey,
         600,
-        { download: `${book.title}.pdf` }
+        { download: `${book.title}.pdf` },
       );
       if (error) throw error;
       if (data?.signedUrl) {
@@ -417,6 +621,30 @@ export default function ReaderScreen() {
         </Text>
 
         <View style={styles.topActions}>
+          {/* In-book Search & Voice Button */}
+          <Pressable
+            onPress={() => setSearchModalOpen((prev) => !prev)}
+            hitSlop={6}
+            accessibilityLabel="بحث صوتي داخل الكتاب"
+            style={[styles.topIconBtn, searchModalOpen && styles.topIconBtnActive]}
+          >
+            <MaterialCommunityIcons name="magnify" size={21} color={searchModalOpen ? palette.gold : palette.white} />
+          </Pressable>
+
+          {/* Audio TTS Button */}
+          <Pressable
+            onPress={() => void toggleSpeech()}
+            hitSlop={6}
+            accessibilityLabel={isSpeakingActive ? "إيقاف القراءة الصوتية" : "قراءة صوتية للصفحة"}
+            style={[styles.topIconBtn, isSpeakingActive && styles.topIconBtnActive]}
+          >
+            <MaterialCommunityIcons
+              name={isSpeakingActive ? "volume-high" : "headphones"}
+              size={21}
+              color={isSpeakingActive ? palette.gold : palette.white}
+            />
+          </Pressable>
+
           {book.pdfPath && pdfDisplayUrl ? (
             <>
               <Pressable onPress={() => adjustZoom(0.25)} hitSlop={6} accessibilityLabel="تكبير">
@@ -450,6 +678,115 @@ export default function ReaderScreen() {
           </Pressable>
         </View>
       </View>
+
+      {/* TTS Audio Player Control Bar */}
+      <View style={styles.audioBar}>
+        <Pressable onPress={() => void toggleSpeech()} style={styles.audioPlayBtn}>
+          <MaterialCommunityIcons
+            name={isSpeakingActive ? "stop-circle" : "play-circle"}
+            size={24}
+            color={isSpeakingActive ? palette.gold : palette.greenDark}
+          />
+          <Text style={[styles.audioPlayText, isSpeakingActive && styles.audioPlayTextActive]}>
+            {isSpeakingActive ? `جارٍ القراءة الصوتية (ص ${page.toLocaleString("ar-EG")})` : "استمع للصفحة الحالية"}
+          </Text>
+        </Pressable>
+
+        <View style={styles.audioSpeedRow}>
+          <Pressable
+            onPress={() => setSpeechRate((r) => (r === 0.8 ? 1.0 : r === 1.0 ? 1.2 : 0.8))}
+            style={styles.speedChip}
+          >
+            <Text style={styles.speedText}>{speechRate}x</Text>
+          </Pressable>
+        </View>
+      </View>
+
+      {/* In-Book Search & Voice Overlay Drawer */}
+      {searchModalOpen ? (
+        <View style={styles.searchDrawer}>
+          <View style={styles.searchDrawerHeader}>
+            <Text style={styles.searchDrawerTitle}>البحث النصي والصوتي داخل الكتاب</Text>
+            <Pressable onPress={() => setSearchModalOpen(false)} hitSlop={6}>
+              <MaterialCommunityIcons name="close" size={20} color={palette.ink} />
+            </Pressable>
+          </View>
+
+          <View style={styles.searchDrawerInputBox}>
+            <MaterialCommunityIcons name="magnify" size={20} color={palette.green} />
+            <TextInput
+              value={searchQuery}
+              onChangeText={(t) => {
+                setSearchQuery(t);
+                executeInBookSearch(t);
+              }}
+              onSubmitEditing={() => executeInBookSearch(searchQuery)}
+              placeholder="اكتب كلمة أو انطقها للبحث..."
+              placeholderTextColor="#879187"
+              style={styles.searchDrawerInput}
+              textAlign="right"
+              returnKeyType="search"
+            />
+            {searchQuery.length > 0 ? (
+              <Pressable onPress={() => { setSearchQuery(""); setSearchResults([]); }}>
+                <MaterialCommunityIcons name="close-circle" size={18} color={palette.muted} />
+              </Pressable>
+            ) : null}
+            <Pressable
+              onPress={toggleInBookVoiceSearch}
+              style={[styles.drawerVoiceBtn, isVoiceSearching && styles.drawerVoiceBtnActive]}
+            >
+              <MaterialCommunityIcons
+                name={isVoiceSearching ? "microphone" : "microphone-outline"}
+                size={19}
+                color={isVoiceSearching ? palette.white : palette.greenDark}
+              />
+            </Pressable>
+          </View>
+
+          {voiceSearchStatus ? (
+            <Text style={styles.voiceSearchStatusText}>{voiceSearchStatus}</Text>
+          ) : null}
+
+          {searchLoading ? (
+            <View style={styles.searchDrawerLoading}>
+              <ActivityIndicator size="small" color={palette.green} />
+              <Text style={styles.searchDrawerLoadingText}>جارٍ مسح صفحات الكتاب عن الكلمة...</Text>
+            </View>
+          ) : searchResults.length > 0 ? (
+            <ScrollView style={styles.searchResultsList} contentContainerStyle={{ gap: 8 }}>
+              <Text style={styles.searchResultsCount}>
+                عثرنا على {searchResults.length.toLocaleString("ar-EG")} موضع:
+              </Text>
+              {searchResults.map((res, i) => (
+                <View key={`${res.page}-${i}`} style={styles.searchResultItem}>
+                  <View style={styles.searchResultHeader}>
+                    <Pressable
+                      onPress={() => {
+                        setCurrentPage(res.page);
+                        setSearchModalOpen(false);
+                      }}
+                      style={styles.pageJumpBadge}
+                    >
+                      <Text style={styles.pageJumpBadgeText}>انتقال لص {res.page.toLocaleString("ar-EG")}</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => void speakArabicText(`في صفحة ${res.page}. ${res.snippet}`)}
+                      style={styles.speakSnippetBtn}
+                    >
+                      <MaterialCommunityIcons name="volume-high" size={16} color={palette.green} />
+                      <Text style={styles.speakSnippetText}>استماع للنتيجة</Text>
+                    </Pressable>
+                  </View>
+                  <Text style={styles.searchResultSnippet}>{res.snippet}</Text>
+                </View>
+              ))}
+            </ScrollView>
+          ) : searchQuery.trim() && !searchLoading ? (
+            <Text style={styles.searchDrawerEmpty}>لم يُعثر على تطابق لكلمة «{searchQuery}» في هذا الكتاب.</Text>
+          ) : null}
+        </View>
+      ) : null}
 
       {/* Progress Line */}
       <View style={styles.progressLine}>
@@ -619,6 +956,175 @@ const styles = StyleSheet.create({
     flexDirection: "row-reverse",
     alignItems: "center",
     gap: 12,
+  },
+  topIconBtn: {
+    padding: 3,
+    borderRadius: 6,
+  },
+  topIconBtnActive: {
+    backgroundColor: "rgba(197, 160, 89, 0.25)",
+  },
+  audioBar: {
+    minHeight: 42,
+    backgroundColor: "#112217",
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(197, 160, 89, 0.3)",
+    paddingHorizontal: 14,
+    flexDirection: "row-reverse",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  audioPlayBtn: {
+    flexDirection: "row-reverse",
+    alignItems: "center",
+    gap: 7,
+  },
+  audioPlayText: {
+    color: palette.white,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  audioPlayTextActive: {
+    color: palette.gold,
+  },
+  audioSpeedRow: {
+    flexDirection: "row-reverse",
+    alignItems: "center",
+    gap: 6,
+  },
+  speedChip: {
+    backgroundColor: "rgba(255, 255, 255, 0.12)",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+  },
+  speedText: {
+    color: palette.white,
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  searchDrawer: {
+    backgroundColor: palette.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: palette.border,
+    padding: 12,
+    maxHeight: 320,
+  },
+  searchDrawerHeader: {
+    flexDirection: "row-reverse",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 8,
+  },
+  searchDrawerTitle: {
+    color: palette.ink,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  searchDrawerInputBox: {
+    flexDirection: "row-reverse",
+    alignItems: "center",
+    gap: 8,
+    borderWidth: 1,
+    borderColor: palette.border,
+    borderRadius: 10,
+    backgroundColor: palette.white,
+    paddingHorizontal: 10,
+    minHeight: 40,
+  },
+  searchDrawerInput: {
+    flex: 1,
+    paddingVertical: 6,
+    color: palette.ink,
+    fontSize: 13,
+    writingDirection: "rtl",
+  },
+  drawerVoiceBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: palette.greenSoft,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  drawerVoiceBtnActive: {
+    backgroundColor: palette.greenDark,
+  },
+  voiceSearchStatusText: {
+    color: palette.gold,
+    fontSize: 11,
+    fontWeight: "700",
+    textAlign: "right",
+    marginTop: 5,
+  },
+  searchDrawerLoading: {
+    flexDirection: "row-reverse",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 14,
+    justifyContent: "center",
+  },
+  searchDrawerLoadingText: {
+    color: palette.muted,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  searchResultsList: {
+    marginTop: 8,
+    maxHeight: 200,
+  },
+  searchResultsCount: {
+    color: palette.muted,
+    fontSize: 11,
+    fontWeight: "700",
+    textAlign: "right",
+    marginBottom: 4,
+  },
+  searchResultItem: {
+    backgroundColor: palette.surfaceWarm,
+    borderWidth: 1,
+    borderColor: palette.border,
+    borderRadius: 8,
+    padding: 9,
+    gap: 5,
+  },
+  searchResultHeader: {
+    flexDirection: "row-reverse",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  pageJumpBadge: {
+    backgroundColor: palette.greenSoft,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  pageJumpBadgeText: {
+    color: palette.greenDark,
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  speakSnippetBtn: {
+    flexDirection: "row-reverse",
+    alignItems: "center",
+    gap: 4,
+  },
+  speakSnippetText: {
+    color: palette.green,
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  searchResultSnippet: {
+    color: palette.ink,
+    fontSize: 12,
+    lineHeight: 18,
+    textAlign: "right",
+  },
+  searchDrawerEmpty: {
+    color: palette.muted,
+    fontSize: 12,
+    textAlign: "center",
+    marginTop: 12,
   },
   progressLine: { height: 3, backgroundColor: "#D9DDCF", alignItems: "flex-end" },
   progressFill: { height: 3, backgroundColor: palette.gold },
