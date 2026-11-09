@@ -3,61 +3,155 @@ export type PickedUploadAsset = {
   file?: Blob | null;
 };
 
-export type LibraryUploadBody = Blob | ArrayBuffer;
+export type LibraryUploadBody = ArrayBuffer | Uint8Array;
 
-export type LibraryImageExtension = "jpg" | "png" | "webp";
+export type LibraryImageExtension = "jpg" | "jpeg" | "png" | "webp";
 
 /**
- * Supabase Storage expects ArrayBuffer for React Native uploads. Web uploads
- * can use the File/Blob supplied by DocumentPicker.
+ * Converts a base64 string to a Uint8Array.
+ * Works seamlessly in React Native (mobile) and Node/test environments.
+ */
+export function base64ToUint8Array(base64: string): Uint8Array {
+  const clean = base64.includes(",") ? base64.split(",")[1].trim() : base64.trim();
+  if (typeof atob === "function") {
+    const binary = atob(clean);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+  }
+  if (typeof Buffer !== "undefined") {
+    const buf = Buffer.from(clean, "base64");
+    return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+  }
+  throw new Error("تعذر فك ترميز ملف Base64.");
+}
+
+/**
+ * Supabase Storage expects ArrayBuffer or Uint8Array. Traditional Blob
+ * on React Native mobile uploads 0-byte files, so we completely avoid Blob
+ * on mobile and read native files as base64 via FileSystem and convert to
+ * Uint8Array. On web, we read via ArrayBuffer.
  */
 export async function resolveBookUploadBody(
   asset: PickedUploadAsset,
   platform: string,
-  makeNativeFile: (uri: string) => Promise<ArrayBuffer> | ArrayBuffer,
+  makeNativeFile?: (uri: string) => Promise<ArrayBuffer | Uint8Array> | ArrayBuffer | Uint8Array,
 ): Promise<LibraryUploadBody> {
   let body: LibraryUploadBody;
+
   if (platform !== "web") {
-    body = await makeNativeFile(asset.uri);
-  } else if (asset.file) {
-    body = asset.file;
-  } else {
-    const response = await fetch(asset.uri);
-    if (!response.ok) {
-      throw new Error("تعذر قراءة الملف المختار في المتصفح.");
+    if (makeNativeFile) {
+      body = await makeNativeFile(asset.uri);
+    } else {
+      const FileSystem = await import("expo-file-system");
+      const base64 = await FileSystem.readAsStringAsync(asset.uri, {
+        encoding: (FileSystem as any).EncodingType?.Base64 ?? "base64",
+      });
+      body = base64ToUint8Array(base64);
     }
-    body = await response.blob();
+  } else {
+    // Web environment: read as ArrayBuffer via fetch or file.arrayBuffer()
+    if (asset.file && typeof asset.file.arrayBuffer === "function") {
+      body = await asset.file.arrayBuffer();
+    } else {
+      const response = await fetch(asset.uri);
+      if (!response.ok) {
+        throw new Error("تعذر قراءة الملف المختار في المتصفح.");
+      }
+      body = await response.arrayBuffer();
+    }
   }
 
-  const size = body instanceof ArrayBuffer ? body.byteLength : body.size;
-  if (size <= 0) {
-    throw new Error("الملف المختار فارغ أو تعذرت قراءته. اختر ملفًا صالحًا من الجهاز ثم حاول مجددًا.");
+  const byteLength = body instanceof Uint8Array ? body.byteLength : (body as ArrayBuffer).byteLength;
+  if (!byteLength || byteLength <= 0) {
+    throw new Error("الملف المختار فارغ أو بحجم صفر بايت. يرجى اختيار ملف صالح من الجهاز ثم إعادة المحاولة.");
   }
+
   return body;
 }
 
-/** Create an ASCII-only object key that never contains the user's filename. */
-export function createLibraryStoragePath(
-  extension: "pdf" | LibraryImageExtension,
-  now = Date.now(),
-  suffix = Math.random().toString(36).slice(2, 10),
-): string {
-  const safeSuffix = suffix.replace(/[^a-zA-Z0-9]/g, "") || "upload";
-  return `files/${now}-${safeSuffix}.${extension}`;
-}
-
-/** Keep the existing PDF helper stable for its callers and tests. */
+/**
+ * Generates an ASCII-only storage path for books inside the 'files/' directory.
+ * Completely decoupled from the book's Arabic or user-entered title.
+ */
 export function createBookStoragePath(
   now = Date.now(),
   suffix = Math.random().toString(36).slice(2, 10),
 ): string {
-  return createLibraryStoragePath("pdf", now, suffix);
+  const safeSuffix = suffix.replace(/[^a-zA-Z0-9]/g, "") || "upload";
+  return `files/${now}-${safeSuffix}.pdf`;
 }
 
+/**
+ * Generates an ASCII-only storage path for book covers inside the 'covers/' directory.
+ */
 export function createCoverStoragePath(
   extension: LibraryImageExtension,
   now = Date.now(),
   suffix = Math.random().toString(36).slice(2, 10),
 ): string {
-  return createLibraryStoragePath(extension, now, suffix);
+  const safeSuffix = suffix.replace(/[^a-zA-Z0-9]/g, "") || "upload";
+  return `covers/${now}-${safeSuffix}.${extension}`;
+}
+
+/** Keep backwards compatibility helper */
+export function createLibraryStoragePath(
+  extension: "pdf" | LibraryImageExtension,
+  now = Date.now(),
+  suffix = Math.random().toString(36).slice(2, 10),
+): string {
+  if (extension === "pdf") {
+    return createBookStoragePath(now, suffix);
+  }
+  return createCoverStoragePath(extension, now, suffix);
+}
+
+/**
+ * Extracts the storage object path (e.g., 'files/123.pdf' or 'covers/456.jpg')
+ * from either a full Supabase storage public/signed URL or a relative path.
+ */
+export function extractStoragePath(urlOrPath: string | null | undefined): string | null {
+  if (!urlOrPath) return null;
+  const trimmed = urlOrPath.trim();
+  if (!trimmed) return null;
+
+  const match = trimmed.match(/\/library\/(.+)$/);
+  if (match && match[1]) {
+    return match[1].split("?")[0].trim();
+  }
+
+  if (/^https?:\/\//i.test(trimmed)) {
+    try {
+      const parsed = new URL(trimmed);
+      const segments = parsed.pathname.split("/").filter(Boolean);
+      const libIndex = segments.indexOf("library");
+      if (libIndex !== -1 && libIndex + 1 < segments.length) {
+        return segments.slice(libIndex + 1).join("/");
+      }
+    } catch {
+      // ignore parsing error
+    }
+  }
+
+  return trimmed.replace(/^\/+/, "");
+}
+
+/**
+ * Returns a clean, trimmed public URL for a given storage path or existing public URL.
+ */
+export function resolvePublicStorageUrl(
+  supabaseInstance: { storage: { from: (bucket: string) => { getPublicUrl: (path: string) => { data: { publicUrl: string } } } } },
+  pathOrUrl: string | null | undefined,
+): string | null {
+  if (!pathOrUrl) return null;
+  const trimmed = pathOrUrl.trim();
+  if (!trimmed) return null;
+  if (/^https?:\/\//i.test(trimmed)) {
+    return trimmed;
+  }
+  const cleanPath = trimmed.replace(/^\/+/, "");
+  const { data } = supabaseInstance.storage.from("library").getPublicUrl(cleanPath);
+  return (data?.publicUrl ?? "").trim() || null;
 }

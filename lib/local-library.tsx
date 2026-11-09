@@ -1,5 +1,12 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { Platform } from "react-native";
+import {
+  deleteLocalBookCache,
+  ensureValidLocalPdf,
+  getBookCacheDirectory,
+} from "./book-cache";
+
+export { getBookCacheDirectory, deleteLocalBookCache, ensureValidLocalPdf };
 
 export type LocalLibraryState = {
   favorites: string[];
@@ -16,25 +23,27 @@ type LocalLibraryContextValue = LocalLibraryState & {
   toggleBookmark: (id: string, page: number) => void;
   setFontScale: (value: number) => void;
   clearLocalData: () => Promise<void>;
+  deleteBookCache: (bookId: string) => Promise<void>;
+  resolveBookPdfUri: (bookId: string, remotePdfUrl: string) => Promise<{ uri: string; isLocal: boolean }>;
 };
 
 const KEY = "al-maktaba-al-fadhila-mobile-v1";
 const initial: LocalLibraryState = { favorites: [], progress: {}, bookmarks: {}, fontScale: 1, seenWelcome: false };
 const Context = createContext<LocalLibraryContextValue | null>(null);
 
-async function readStoredState() {
+async function readRaw(): Promise<string | null> {
   if (Platform.OS === "web") return typeof window === "undefined" ? null : window.localStorage.getItem(KEY);
-  const { default: AsyncStorage } = await import("@react-native-async-storage/async-storage");
-  return AsyncStorage.getItem(KEY);
+  const SecureStore = await import("expo-secure-store");
+  return SecureStore.getItemAsync(KEY);
 }
 
-async function writeStoredState(value: string) {
+async function writeRaw(value: string): Promise<void> {
   if (Platform.OS === "web") {
     if (typeof window !== "undefined") window.localStorage.setItem(KEY, value);
     return;
   }
-  const { default: AsyncStorage } = await import("@react-native-async-storage/async-storage");
-  await AsyncStorage.setItem(KEY, value);
+  const SecureStore = await import("expo-secure-store");
+  await SecureStore.setItemAsync(KEY, value);
 }
 
 export function LocalLibraryProvider({ children }: { children: React.ReactNode }) {
@@ -43,55 +52,92 @@ export function LocalLibraryProvider({ children }: { children: React.ReactNode }
 
   useEffect(() => {
     let active = true;
-    void readStoredState()
-      .then((raw) => {
-        if (!active) return;
-        if (raw) {
-          try {
-            const parsed = JSON.parse(raw) as Partial<LocalLibraryState>;
-            setState({ ...initial, ...parsed });
-          } catch {
-            setState(initial);
-          }
+    void (async () => {
+      try {
+        const raw = await readRaw();
+        if (raw && active) {
+          const parsed = JSON.parse(raw);
+          setState({
+            favorites: Array.isArray(parsed.favorites) ? parsed.favorites : [],
+            progress: typeof parsed.progress === "object" && parsed.progress ? parsed.progress : {},
+            bookmarks: typeof parsed.bookmarks === "object" && parsed.bookmarks ? parsed.bookmarks : {},
+            fontScale: typeof parsed.fontScale === "number" ? parsed.fontScale : 1,
+            seenWelcome: Boolean(parsed.seenWelcome),
+          });
         }
-      })
-      .catch(() => undefined)
-      .finally(() => { if (active) setReady(true); });
+      } catch {
+        // fallback to defaults on corrupt storage
+      } finally {
+        if (active) setReady(true);
+      }
+    })();
     return () => { active = false; };
   }, []);
 
-  useEffect(() => {
-    if (ready) void writeStoredState(JSON.stringify(state)).catch(() => undefined);
-  }, [state, ready]);
+  const persist = useCallback((next: LocalLibraryState) => {
+    setState(next);
+    void writeRaw(JSON.stringify(next));
+  }, []);
 
   const toggleFavorite = useCallback((id: string) => {
-    setState((current) => ({ ...current, favorites: current.favorites.includes(id) ? current.favorites.filter((entry) => entry !== id) : [...current.favorites, id] }));
-  }, []);
-  const saveProgress = useCallback((id: string, page: number) => {
-    setState((current) => ({ ...current, progress: { ...current.progress, [id]: Math.max(1, page) } }));
-  }, []);
-  const toggleBookmark = useCallback((id: string, page: number) => {
-    setState((current) => {
-      const currentPages = current.bookmarks[id] ?? [];
-      const nextPages = currentPages.includes(page) ? currentPages.filter((entry) => entry !== page) : [...currentPages, page].sort((a, b) => a - b);
-      return { ...current, bookmarks: { ...current.bookmarks, [id]: nextPages } };
+    persist({
+      ...state,
+      favorites: state.favorites.includes(id) ? state.favorites.filter((x) => x !== id) : [...state.favorites, id],
     });
-  }, []);
-  const setFontScale = useCallback((value: number) => {
-    setState((current) => ({ ...current, fontScale: Math.min(1.6, Math.max(0.85, value)) }));
-  }, []);
-  const clearLocalData = useCallback(async () => {
-    const empty = { ...initial, seenWelcome: state.seenWelcome };
-    setState(empty);
-    await writeStoredState(JSON.stringify(empty));
-  }, [state.seenWelcome]);
+  }, [persist, state]);
 
-  const value = useMemo(() => ({ ...state, ready, toggleFavorite, saveProgress, toggleBookmark, setFontScale, clearLocalData }), [state, ready, toggleFavorite, saveProgress, toggleBookmark, setFontScale, clearLocalData]);
+  const saveProgress = useCallback((id: string, page: number) => {
+    persist({ ...state, progress: { ...state.progress, [id]: page } });
+  }, [persist, state]);
+
+  const toggleBookmark = useCallback((id: string, page: number) => {
+    const list = state.bookmarks[id] ?? [];
+    const nextList = list.includes(page) ? list.filter((p) => p !== page) : [...list, page].sort((a, b) => a - b);
+    persist({ ...state, bookmarks: { ...state.bookmarks, [id]: nextList } });
+  }, [persist, state]);
+
+  const setFontScale = useCallback((value: number) => {
+    persist({ ...state, fontScale: Math.max(0.85, Math.min(1.4, value)) });
+  }, [persist, state]);
+
+  const clearLocalData = useCallback(async () => {
+    persist(initial);
+    if (Platform.OS === "web") {
+      if (typeof window !== "undefined") window.localStorage.removeItem(KEY);
+    } else {
+      const SecureStore = await import("expo-secure-store");
+      await SecureStore.deleteItemAsync(KEY);
+    }
+  }, [persist]);
+
+  const deleteBookCacheHandler = useCallback(async (bookId: string) => {
+    await deleteLocalBookCache(bookId);
+  }, []);
+
+  const resolveBookPdfUri = useCallback(async (bookId: string, remotePdfUrl: string) => {
+    return ensureValidLocalPdf(bookId, remotePdfUrl);
+  }, []);
+
+  const value = useMemo(
+    () => ({
+      ...state,
+      ready,
+      toggleFavorite,
+      saveProgress,
+      toggleBookmark,
+      setFontScale,
+      clearLocalData,
+      deleteBookCache: deleteBookCacheHandler,
+      resolveBookPdfUri,
+    }),
+    [state, ready, toggleFavorite, saveProgress, toggleBookmark, setFontScale, clearLocalData, deleteBookCacheHandler, resolveBookPdfUri],
+  );
+
   return <Context.Provider value={value}>{children}</Context.Provider>;
 }
 
 export function useLocalLibrary() {
-  const value = useContext(Context);
-  if (!value) throw new Error("useLocalLibrary must be used within LocalLibraryProvider");
-  return value;
+  const ctx = useContext(Context);
+  if (!ctx) throw new Error("useLocalLibrary must be used within LocalLibraryProvider");
+  return ctx;
 }

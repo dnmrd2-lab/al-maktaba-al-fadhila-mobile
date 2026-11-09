@@ -2,6 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useS
 import type { Session } from "@supabase/supabase-js";
 import { supabase, supabaseConfigured } from "./supabase";
 import { getLibraryErrorMessage } from "./library-utils";
+import { extractStoragePath } from "./book-upload";
 
 export type StaffRole = "admin" | "content_manager" | "publisher";
 export type DownloadPolicy = "READ_ONLY" | "DOWNLOAD_ALLOWED";
@@ -30,6 +31,7 @@ export type Book = {
   pages: number;
   published: boolean;
   order: number;
+  isArchived: boolean;
 };
 
 type AppContextValue = {
@@ -59,7 +61,7 @@ function mapRole(value: string): StaffRole | null {
 const SUPER_ADMIN_EMAILS = ["dnmrd2@gmail.com"];
 
 async function signCoverPaths(paths: string[]) {
-  const unique = [...new Set(paths.filter(Boolean))];
+  const unique = [...new Set(paths.map((p) => extractStoragePath(p) || p).filter(Boolean))];
   if (!unique.length) return {} as Record<string, string>;
   const { data, error } = await supabase.storage.from("library").createSignedUrls(unique, 3600);
   if (error) return {} as Record<string, string>;
@@ -164,43 +166,68 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setIsLoading(true);
     setError(null);
     try {
-      const bookRequest = isStaff
-        ? supabase
-            .from("books")
-            .select("id, folder_id, title, author, description, category, cover_key, cover_url, pdf_url, pages, published, sort, download_policy")
-            .order("sort")
-        : supabase
-            .from("books")
-            .select("id, folder_id, title, author, description, category, cover_key, cover_url, pdf_url, pages, published, sort, download_policy")
-            .eq("published", true)
-            .order("sort");
-      const [folderResult, bookResult] = await withTimeout(Promise.all([
-        supabase.from("folders").select("id, slug, name, description, locked, sort").order("sort"),
-        bookRequest,
-      ]), 15_000);
+      const selectColsWithArchive =
+        "id, folder_id, title, author, description, category, cover_key, cover_url, pdf_url, pages, published, sort, download_policy, is_archived";
+      const selectColsFallback =
+        "id, folder_id, title, author, description, category, cover_key, cover_url, pdf_url, pages, published, sort, download_policy";
+
+      let bookQuery = isStaff
+        ? supabase.from("books").select(selectColsWithArchive).order("sort")
+        : supabase.from("books").select(selectColsWithArchive).eq("published", true).order("sort");
+
+      let [folderResult, bookResult]: [any, any] = await withTimeout(
+        Promise.all([
+          supabase.from("folders").select("id, slug, name, description, locked, sort").order("sort"),
+          bookQuery,
+        ]),
+        15_000,
+      );
+
+      // Gracefully fallback if is_archived column does not exist in DB yet (PostgREST code 42703)
+      if (bookResult.error && (bookResult.error.code === "42703" || bookResult.error.message?.includes("is_archived"))) {
+        const fallbackBookQuery = isStaff
+          ? supabase.from("books").select(selectColsFallback).order("sort")
+          : supabase.from("books").select(selectColsFallback).eq("published", true).order("sort");
+        bookResult = await fallbackBookQuery;
+      }
+
       if (folderResult.error) throw folderResult.error;
       if (bookResult.error) throw bookResult.error;
+
       const rows = bookResult.data ?? [];
-      const visibleRows = isStaff ? rows : rows.filter((row) => row.published);
-      const signedCovers = await withTimeout(signCoverPaths(visibleRows.map((row) => row.cover_url ?? "")), 12_000);
+      const visibleRows = isStaff
+        ? rows
+        : rows.filter((row: any) => row.published && !row.is_archived);
+
+      const coverCandidates = visibleRows.map((row: any) => (row.cover_url ?? "").trim()).filter(Boolean);
+      const signedCovers = await withTimeout(signCoverPaths(coverCandidates), 12_000);
+
       setFolders((folderResult.data ?? []) as Folder[]);
       setBooks(
-        visibleRows.map((row) => ({
-          id: row.id,
-          folderId: row.folder_id,
-          title: row.title,
-          author: row.author ?? "",
-          description: row.description ?? "",
-          category: row.category ?? "",
-          coverKey: row.cover_key === "cream" || row.cover_key === "teal" ? row.cover_key : "green",
-          coverPath: row.cover_url,
-          coverUri: row.cover_url ? signedCovers[row.cover_url] ?? null : null,
-          pdfPath: row.pdf_url,
-          downloadPolicy: row.download_policy === "DOWNLOAD_ALLOWED" ? "DOWNLOAD_ALLOWED" : "READ_ONLY",
-          pages: Number(row.pages) || 0,
-          published: Boolean(row.published),
-          order: Number(row.sort) || 0,
-        })),
+        visibleRows.map((row: any) => {
+          const rawCover = (row.cover_url ?? "").trim() || null;
+          const storageKey = extractStoragePath(rawCover);
+          const isDirectUrl = Boolean(rawCover && /^https?:\/\//i.test(rawCover));
+          const signedUri = storageKey ? signedCovers[storageKey] ?? null : null;
+
+          return {
+            id: row.id,
+            folderId: row.folder_id,
+            title: row.title,
+            author: row.author ?? "",
+            description: row.description ?? "",
+            category: row.category ?? "",
+            coverKey: row.cover_key === "cream" || row.cover_key === "teal" ? row.cover_key : "green",
+            coverPath: rawCover,
+            coverUri: isDirectUrl ? rawCover : signedUri,
+            pdfPath: (row.pdf_url ?? "").trim() || null,
+            downloadPolicy: row.download_policy === "DOWNLOAD_ALLOWED" ? "DOWNLOAD_ALLOWED" : "READ_ONLY",
+            pages: Number(row.pages) || 0,
+            published: Boolean(row.published),
+            order: Number(row.sort) || 0,
+            isArchived: Boolean(row.is_archived),
+          };
+        }),
       );
     } catch (cause) {
       setError(getLibraryErrorMessage(cause));

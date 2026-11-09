@@ -1,17 +1,18 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Platform, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Alert, Platform, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import * as DocumentPicker from "expo-document-picker";
-import { File as ExpoFile } from "expo-file-system";
 import { AppHeader, AppScreen, FeedbackPanel, Pill, PrimaryButton } from "../../components/ui";
-import { type Book, type StaffRole, useApp } from "../../lib/app-context";
+import { type Book, type DownloadPolicy, type StaffRole, useApp } from "../../lib/app-context";
 import {
   createBookStoragePath,
   createCoverStoragePath,
+  extractStoragePath,
   resolveBookUploadBody,
   type LibraryImageExtension,
 } from "../../lib/book-upload";
+import { deleteLocalBookCache } from "../../lib/local-library";
 import { supabase } from "../../lib/supabase";
 import { palette, radius } from "../../lib/theme";
 
@@ -31,27 +32,29 @@ const staffRoleOptions: { value: StaffRole; label: string }[] = [
 ];
 const imageMimeTypes: Record<LibraryImageExtension, string> = {
   jpg: "image/jpeg",
+  jpeg: "image/jpeg",
   png: "image/png",
   webp: "image/webp",
 };
 
 function getCoverExtension(asset: DocumentPicker.DocumentPickerAsset): LibraryImageExtension {
-  const mime = asset.mimeType?.toLowerCase();
-  if (mime === "image/jpeg") return "jpg";
+  const mime = asset.mimeType?.toLowerCase() ?? "";
   if (mime === "image/png") return "png";
   if (mime === "image/webp") return "webp";
-  const extension = asset.name.split(".").pop()?.toLowerCase();
-  if (extension === "jpg" || extension === "jpeg") return "jpg";
-  if (extension === "png" || extension === "webp") return extension;
-  throw new Error("اختر صورة غلاف بصيغة JPG أو PNG أو WebP.");
+  if (mime === "image/jpeg" || mime === "image/jpg") return "jpg";
+  const ext = asset.name.split(".").pop()?.toLowerCase();
+  if (ext === "png" || ext === "webp" || ext === "jpg" || ext === "jpeg") return ext;
+  throw new Error("نوع صورة الغلاف غير مدعوم. استخدم JPG أو PNG أو WebP.");
 }
 
-async function getFunctionError(error: unknown): Promise<string> {
-  if (typeof error === "object" && error !== null && "context" in error) {
-    const context = (error as { context?: unknown }).context;
-    if (context instanceof Response) {
-      const payload = await context.clone().json().catch(() => null) as { error?: unknown } | null;
-      if (typeof payload?.error === "string") return payload.error;
+async function getFunctionError(error: unknown) {
+  const context = error as { context?: { json?: () => Promise<{ error?: string }> } } | null;
+  if (context?.context && typeof context.context.json === "function") {
+    try {
+      const payload = await context.context.json();
+      if (payload?.error) return payload.error;
+    } catch {
+      // ignore
     }
   }
   return error instanceof Error ? error.message : "تعذر الاتصال بخدمة إدارة الحسابات.";
@@ -71,17 +74,17 @@ async function uploadLibraryAsset(
   asset: DocumentPicker.DocumentPickerAsset,
   path: string,
   contentType: string,
-) {
-  const uploadBody = await resolveBookUploadBody(
-    asset,
-    Platform.OS,
-    async (uri) => await new ExpoFile(uri).arrayBuffer(),
-  );
+): Promise<string> {
+  const uploadBody = await resolveBookUploadBody(asset, Platform.OS);
   const { error } = await supabase.storage.from("library").upload(path, uploadBody, {
     contentType,
     upsert: false,
   });
   if (error) throw error;
+
+  const { data } = supabase.storage.from("library").getPublicUrl(path);
+  const publicUrl = (data?.publicUrl ?? "").trim();
+  return publicUrl || path;
 }
 
 export default function AdminScreen() {
@@ -94,20 +97,18 @@ export default function AdminScreen() {
     session,
     authReady,
     roles,
-    rolesLoading,
-    canManageBooks,
     canPublish,
+    canManageBooks,
+    isConfigured,
     signIn,
     signOut,
-    isConfigured,
   } = useApp();
-  const isAdmin = roles.includes("admin");
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [busyBook, setBusyBook] = useState<string | null>(null);
+
   const [title, setTitle] = useState("");
   const [author, setAuthor] = useState("");
   const [description, setDescription] = useState("");
@@ -115,30 +116,29 @@ export default function AdminScreen() {
   const [pages, setPages] = useState("");
   const [folderId, setFolderId] = useState("");
   const [coverKey, setCoverKey] = useState<"green" | "cream" | "teal">("green");
+  const [downloadPolicy, setDownloadPolicy] = useState<DownloadPolicy>("READ_ONLY");
   const [pdfAsset, setPdfAsset] = useState<DocumentPicker.DocumentPickerAsset | null>(null);
   const [coverAsset, setCoverAsset] = useState<DocumentPicker.DocumentPickerAsset | null>(null);
+  const [saving, setSaving] = useState(false);
   const [editingBookId, setEditingBookId] = useState<string | null>(null);
-  const [downloadPolicy, setDownloadPolicy] = useState<"READ_ONLY" | "DOWNLOAD_ALLOWED">("READ_ONLY");
+  const [busyBook, setBusyBook] = useState<string | null>(null);
   const [saveFeedback, setSaveFeedback] = useState<SaveFeedback | null>(null);
+  const [pendingDeleteBookId, setPendingDeleteBookId] = useState<string | null>(null);
+  const [bookFilterTab, setBookFilterTab] = useState<"all" | "published" | "draft" | "archived">("all");
+
   const [staffUsers, setStaffUsers] = useState<ManagedStaffUser[]>([]);
   const [staffUsersLoading, setStaffUsersLoading] = useState(false);
-  const [staffBusy, setStaffBusy] = useState(false);
-  const [staffFeedback, setStaffFeedback] = useState<SaveFeedback | null>(null);
   const [staffEmail, setStaffEmail] = useState("");
   const [staffPassword, setStaffPassword] = useState("");
   const [staffRole, setStaffRole] = useState<StaffRole>("content_manager");
+  const [staffBusy, setStaffBusy] = useState(false);
+  const [staffFeedback, setStaffFeedback] = useState<SaveFeedback | null>(null);
   const [passwordTargetId, setPasswordTargetId] = useState<string | null>(null);
   const [replacementPassword, setReplacementPassword] = useState("");
   const [pendingDeleteUserId, setPendingDeleteUserId] = useState<string | null>(null);
 
-  const editingBook = useMemo(
-    () => books.find((book) => book.id === editingBookId) ?? null,
-    [books, editingBookId],
-  );
-
-  useEffect(() => {
-    if (!folderId && folders[0]) setFolderId(folders[0].id);
-  }, [folders, folderId]);
+  const isAdmin = roles.includes("admin");
+  const editingBook = useMemo(() => books.find((b) => b.id === editingBookId) ?? null, [books, editingBookId]);
 
   const resetBookForm = () => {
     setTitle("");
@@ -146,6 +146,7 @@ export default function AdminScreen() {
     setDescription("");
     setCategory("");
     setPages("");
+    setFolderId(folders[0]?.id ?? "");
     setPdfAsset(null);
     setCoverAsset(null);
     setEditingBookId(null);
@@ -180,7 +181,6 @@ export default function AdminScreen() {
       }
     }
   }, [editBookId, books]);
-
 
   const loadStaffUsers = useCallback(async () => {
     if (!isAdmin) return;
@@ -242,8 +242,6 @@ export default function AdminScreen() {
     }
   };
 
-
-
   const saveBook = async () => {
     setSaveFeedback(null);
     if (!title.trim() || !folderId) {
@@ -264,20 +262,22 @@ export default function AdminScreen() {
     try {
       let nextPdfPath = editingBook?.pdfPath ?? null;
       let nextCoverPath = editingBook?.coverPath ?? null;
+
       if (pdfAsset) {
         if (!session) throw new Error("سجّل الدخول قبل رفع الملفات.");
         const path = createBookStoragePath();
-        await uploadLibraryAsset(pdfAsset, path, "application/pdf");
+        const publicUrl = await uploadLibraryAsset(pdfAsset, path, "application/pdf");
         uploadedPaths.push(path);
-        nextPdfPath = path;
+        nextPdfPath = publicUrl;
       }
+
       if (coverAsset) {
         if (!session) throw new Error("سجّل الدخول قبل رفع الملفات.");
         const extension = getCoverExtension(coverAsset);
         const path = createCoverStoragePath(extension);
-        await uploadLibraryAsset(coverAsset, path, imageMimeTypes[extension]);
+        const publicUrl = await uploadLibraryAsset(coverAsset, path, imageMimeTypes[extension]);
         uploadedPaths.push(path);
-        nextCoverPath = path;
+        nextCoverPath = publicUrl;
       }
 
       const bookData = {
@@ -306,10 +306,12 @@ export default function AdminScreen() {
         if (error) throw error;
       }
 
+      // Clean up previous storage objects if replaced
       const replacedPaths = [
-        pdfAsset && editingBook?.pdfPath ? editingBook.pdfPath : null,
-        coverAsset && editingBook?.coverPath ? editingBook.coverPath : null,
+        pdfAsset && editingBook?.pdfPath ? extractStoragePath(editingBook.pdfPath) : null,
+        coverAsset && editingBook?.coverPath ? extractStoragePath(editingBook.coverPath) : null,
       ].filter((path): path is string => Boolean(path));
+
       let cleanupWarning = "";
       if (replacedPaths.length) {
         const { error } = await supabase.storage.from("library").remove(replacedPaths);
@@ -345,6 +347,91 @@ export default function AdminScreen() {
       setSaveFeedback({ tone: "error", message: cause instanceof Error ? `تعذر تغيير حالة النشر: ${cause.message}` : "تعذر تغيير حالة النشر. تحقق من دور الحساب." });
     } finally {
       setBusyBook(null);
+    }
+  };
+
+  const toggleArchived = async (book: Book) => {
+    setBusyBook(book.id);
+    setSaveFeedback(null);
+    const nextArchived = !book.isArchived;
+    try {
+      const { error } = await supabase
+        .from("books")
+        .update({ is_archived: nextArchived, updated_at: new Date().toISOString() })
+        .eq("id", book.id);
+
+      if (error) {
+        if (error.code === "42703" || error.message?.includes("is_archived")) {
+          // Fallback if column not yet added in database schema
+          const { error: pubError } = await supabase
+            .from("books")
+            .update({ published: !nextArchived, updated_at: new Date().toISOString() })
+            .eq("id", book.id);
+          if (pubError) throw pubError;
+        } else {
+          throw error;
+        }
+      }
+
+      await refresh();
+      setSaveFeedback({
+        tone: "success",
+        message: nextArchived ? `تم أرشفة كتاب «${book.title}» بنجاح وإخفاؤه من القائمة العامة.` : `تمت استعادة كتاب «${book.title}» من الأرشيف.`,
+      });
+    } catch (cause) {
+      setSaveFeedback({
+        tone: "error",
+        message: cause instanceof Error ? `تعذر تغيير حالة الأرشفة: ${cause.message}` : "تعذر تغيير حالة الأرشفة.",
+      });
+    } finally {
+      setBusyBook(null);
+    }
+  };
+
+  const deleteBook = async (book: Book) => {
+    setBusyBook(book.id);
+    setSaveFeedback(null);
+    try {
+      // 1. Extract storage paths from pdf_url and cover_url
+      const pathsToRemove: string[] = [];
+      const pdfStoragePath = extractStoragePath(book.pdfPath);
+      if (pdfStoragePath) pathsToRemove.push(pdfStoragePath);
+
+      const coverStoragePath = extractStoragePath(book.coverPath);
+      if (coverStoragePath) pathsToRemove.push(coverStoragePath);
+
+      // 2. Remove files from Supabase Storage
+      if (pathsToRemove.length > 0) {
+        await supabase.storage.from("library").remove(pathsToRemove).catch(() => undefined);
+      }
+
+      // 3. Remove local cache from device storage
+      await deleteLocalBookCache(book.id);
+
+      // 4. Delete row from public.books
+      const { error } = await supabase.from("books").delete().eq("id", book.id);
+      if (error) throw error;
+
+      // 5. Reset form if this book was being edited
+      if (editingBook?.id === book.id) {
+        resetBookForm();
+      }
+
+      // 6. Refresh app state immediately
+      await refresh();
+
+      setSaveFeedback({
+        tone: "success",
+        message: `تم حذف كتاب «${book.title}» وكافة ملفاته المرتبطة بنجاح.`,
+      });
+    } catch (cause) {
+      setSaveFeedback({
+        tone: "error",
+        message: cause instanceof Error ? `تعذر حذف الكتاب: ${cause.message}` : "تعذر حذف الكتاب.",
+      });
+    } finally {
+      setBusyBook(null);
+      setPendingDeleteBookId(null);
     }
   };
 
@@ -402,6 +489,13 @@ export default function AdminScreen() {
     }
   };
 
+  const filteredBooks = useMemo(() => {
+    if (bookFilterTab === "published") return books.filter((b) => b.published && !b.isArchived);
+    if (bookFilterTab === "draft") return books.filter((b) => !b.published && !b.isArchived);
+    if (bookFilterTab === "archived") return books.filter((b) => b.isArchived);
+    return books;
+  }, [books, bookFilterTab]);
+
   if (!authReady) return <AppScreen><FeedbackPanel title="جارٍ التحقق من الجلسة" loading /></AppScreen>;
   if (!isConfigured) return <AppScreen><FeedbackPanel title="إعداد Supabase مطلوب" message="أضف متغيري EXPO_PUBLIC_SUPABASE_URL وEXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY." /></AppScreen>;
   if (!session) {
@@ -419,98 +513,261 @@ export default function AdminScreen() {
               {...inputProps}
               value={email}
               onChangeText={setEmail}
-              placeholder="dnmrd2@gmail.com"
+              placeholder="admin@example.com"
               keyboardType="email-address"
               autoCapitalize="none"
               style={styles.input}
-              returnKeyType="next"
             />
             <Text style={styles.label}>كلمة المرور</Text>
             <TextInput
               {...inputProps}
               value={password}
               onChangeText={setPassword}
-              placeholder="كلمة المرور"
+              placeholder="••••••••••••"
               secureTextEntry
               autoCapitalize="none"
               style={styles.input}
-              onSubmitEditing={() => void submitLogin()}
-              returnKeyType="go"
             />
             {authError ? <Text style={styles.error}>{authError}</Text> : null}
-            <PrimaryButton
-              title="تسجيل الدخول للإدارة"
-              icon="lock-open-outline"
-              onPress={() => void submitLogin()}
-              busy={authBusy}
-              style={{ marginTop: 14 }}
-            />
+            <PrimaryButton title="تسجيل الدخول" onPress={() => void submitLogin()} busy={authBusy} style={{ marginTop: 14 }} />
           </View>
-          <PrimaryButton
-            title="العودة لتصفح المكتبة"
-            icon="arrow-left"
-            variant="outline"
-            onPress={() => router.back()}
-            style={{ marginHorizontal: 18, marginTop: 12 }}
-          />
         </ScrollView>
       </AppScreen>
     );
-  }
-  if (rolesLoading) return <AppScreen><FeedbackPanel title="جارٍ التحقق من الصلاحيات" loading /></AppScreen>;
-  if (!roles.length) {
-    return <AppScreen><FeedbackPanel title="ليس لهذا الحساب صلاحية إدارة" message="تواصل مع مدير المكتبة لإضافة دور مناسب إلى حسابك." action="تسجيل الخروج" onAction={() => void signOut()} /></AppScreen>;
   }
 
   return (
     <AppScreen>
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <AppHeader eyebrow="منطقة محمية" title="إدارة المكتبة" subtitle={`الحساب: ${session.user.email ?? "عضو فريق"}`} />
-        <View style={styles.roleRow}>{roles.map((role) => <View key={role} style={styles.rolePill}><Text style={styles.roleText}>{role === "admin" ? "المدير الرئيسي" : role === "content_manager" ? "مسؤول المحتوى" : "مسؤول النشر"}</Text></View>)}</View>
-        {saveFeedback ? (
-          <View accessibilityRole="alert" style={[styles.feedbackBanner, saveFeedback.tone === "success" ? styles.feedbackSuccess : styles.feedbackError]}>
-            <Text style={[styles.feedbackText, saveFeedback.tone === "success" ? styles.feedbackSuccessText : styles.feedbackErrorText]}>{saveFeedback.message}</Text>
-          </View>
-        ) : null}
+        <AppHeader
+          eyebrow="لوحة الإدارة"
+          title="إدارة محتوى المكتبة"
+          subtitle={`مرحباً بك: ${session.user.email ?? "مشرف المكتبة"}`}
+        />
 
-        {canManageBooks ? (
-          <View style={styles.panel}>
-            <Text style={styles.panelTitle}>{editingBook ? "تعديل بيانات الكتاب" : "إضافة كتاب"}</Text>
-            <Text style={styles.label}>العنوان *</Text><TextInput {...inputProps} value={title} onChangeText={setTitle} placeholder="عنوان الكتاب" style={styles.input} />
-            <Text style={styles.label}>المؤلف</Text><TextInput {...inputProps} value={author} onChangeText={setAuthor} placeholder="اسم المؤلف" style={styles.input} />
-            <Text style={styles.label}>التصنيف</Text><TextInput {...inputProps} value={category} onChangeText={setCategory} placeholder="العقيدة، الفقه…" style={styles.input} />
-            <Text style={styles.label}>الوصف أو جزء من المسودة</Text><TextInput {...inputProps} value={description} onChangeText={setDescription} placeholder="نبذة مختصرة أو ملاحظات المسودة" multiline style={[styles.input, styles.multiline]} />
-            <Text style={styles.label}>عدد الصفحات</Text><TextInput {...inputProps} value={pages} onChangeText={setPages} placeholder="اختياري" keyboardType="number-pad" style={styles.input} />
-            <Text style={styles.label}>المجلد</Text><View style={styles.pills}>{folders.map((folder) => <Pill key={folder.id} label={folder.name} selected={folderId === folder.id} onPress={() => setFolderId(folder.id)} />)}</View>
-            
-            <Text style={styles.label}>لون الغلاف البديل</Text><View style={styles.pills}>{(["green", "cream", "teal"] as const).map((key) => <Pill key={key} label={key === "green" ? "أخضر" : key === "cream" ? "عاجي" : "فيروزي"} selected={coverKey === key} onPress={() => setCoverKey(key)} />)}</View>
-            <Text style={styles.label}>سياسة التنزيل</Text><View style={styles.pills}>
-              <Pill label="قراءة فقط من الواجهة" selected={downloadPolicy === "READ_ONLY"} onPress={() => setDownloadPolicy("READ_ONLY")} />
-              <Pill label="السماح بتنزيل النسخة" selected={downloadPolicy === "DOWNLOAD_ALLOWED"} onPress={() => setDownloadPolicy("DOWNLOAD_ALLOWED")} />
+        <View style={styles.roleRow}>
+          {roles.map((role) => (
+            <View key={role} style={styles.rolePill}>
+              <Text style={styles.roleText}>{staffRoleOptions.find((o) => o.value === role)?.label ?? role}</Text>
             </View>
-            <PrimaryButton title={coverAsset ? `صورة: ${coverAsset.name}` : editingBook?.coverPath ? "استبدال صورة الغلاف (اختياري)" : "اختيار صورة غلاف (اختياري)"} variant="outline" onPress={() => void chooseCover()} style={{ marginTop: 12 }} />
-            <PrimaryButton title={pdfAsset ? `PDF: ${pdfAsset.name}` : editingBook?.pdfPath ? "استبدال ملف PDF (اختياري)" : "اختيار ملف PDF (اختياري)"} variant="outline" onPress={() => void choosePdf()} style={{ marginTop: 8 }} />
-            <Text style={styles.formNote}>صور الأغلفة بصيغ JPG أو PNG أو WebP وبحد أقصى 5 ميجابايت. استبدال ملف يحذف النسخة السابقة بعد نجاح حفظ التعديل.</Text>
-            <PrimaryButton title={saving ? "جارٍ الحفظ…" : editingBook ? "حفظ التعديلات" : "حفظ كمسودة"} onPress={() => void saveBook()} busy={saving} style={{ marginTop: 10 }} />
-            {editingBook ? <PrimaryButton title="إلغاء التعديل" variant="outline" onPress={resetBookForm} style={{ marginTop: 8 }} /> : null}
-          </View>
-        ) : null}
-
-        <View style={styles.panel}>
-          <View style={styles.listHeading}><Text style={styles.panelTitle}>الكتب ({books.length.toLocaleString("ar-EG")})</Text><MaterialCommunityIcons name="book-multiple-outline" size={20} color={palette.green} /></View>
-          {books.length === 0 ? <Text style={styles.formNote}>لا توجد كتب في القائمة حاليًا.</Text> : books.map((book) => {
-            const canEditThisBook = roles.includes("admin") || (roles.includes("content_manager") && !book.published);
-            return (
-              <View key={book.id} style={styles.bookRow}>
-                <View style={{ flex: 1, alignItems: "flex-end" }}><Text style={styles.bookTitle} numberOfLines={2}>{book.title}</Text><Text style={styles.bookAuthor}>{book.author || "مؤلف غير محدد"}</Text></View>
-                <View style={[styles.badge, book.published ? styles.badgePublished : styles.badgeDraft]}><Text style={[styles.badgeText, book.published ? styles.badgePublishedText : styles.badgeDraftText]}>{book.published ? "منشور" : "مسودة"}</Text></View>
-                {canEditThisBook ? <PrimaryButton title="تعديل" variant="outline" onPress={() => startEditing(book)} style={styles.publishButton} /> : null}
-                {canPublish ? <PrimaryButton title={book.published ? "إلغاء النشر" : "نشر"} variant={book.published ? "outline" : "secondary"} onPress={() => void togglePublished(book.id, book.published)} busy={busyBook === book.id} style={styles.publishButton} /> : null}
-              </View>
-            );
-          })}
+          ))}
         </View>
 
+        {saveFeedback ? (
+          <View
+            accessibilityRole="alert"
+            style={[
+              styles.feedbackBanner,
+              saveFeedback.tone === "success" ? styles.feedbackSuccess : styles.feedbackError,
+            ]}
+          >
+            <Text
+              style={[
+                styles.feedbackText,
+                saveFeedback.tone === "success" ? styles.feedbackSuccessText : styles.feedbackErrorText,
+              ]}
+            >
+              {saveFeedback.message}
+            </Text>
+          </View>
+        ) : null}
+
+        {/* Book Form Panel */}
+        {canManageBooks ? (
+          <View style={styles.panel}>
+            <View style={styles.listHeading}>
+              <Text style={styles.panelTitle}>{editingBook ? `تعديل كتاب: ${editingBook.title}` : "إضافة كتاب جديد"}</Text>
+              <MaterialCommunityIcons name={editingBook ? "file-document-edit-outline" : "book-plus-outline"} size={22} color={palette.green} />
+            </View>
+
+            <Text style={styles.label}>عنوان الكتاب</Text>
+            <TextInput {...inputProps} value={title} onChangeText={setTitle} placeholder="مثال: الشرح الفريد لكتاب التوحيد" style={styles.input} />
+
+            <Text style={styles.label}>المؤلف / الشارح</Text>
+            <TextInput {...inputProps} value={author} onChangeText={setAuthor} placeholder="فضيلة الشيخ عبدالله بن إبراهيم القرعاوي" style={styles.input} />
+
+            <Text style={styles.label}>التصنيف / الموضوع</Text>
+            <TextInput {...inputProps} value={category} onChangeText={setCategory} placeholder="عقيدة، فقه، أصول..." style={styles.input} />
+
+            <Text style={styles.label}>نبذة ووصف الكتاب</Text>
+            <TextInput {...inputProps} value={description} onChangeText={setDescription} placeholder="اكتب نبذة مختصرة عن محتوى الكتاب ومنهجيته..." multiline style={[styles.input, styles.multiline]} />
+
+            <Text style={styles.label}>عدد الصفحات (اختياري)</Text>
+            <TextInput {...inputProps} value={pages} onChangeText={setPages} placeholder="120" keyboardType="number-pad" style={styles.input} />
+
+            <Text style={styles.label}>المجلد / القسم التابع له</Text>
+            <View style={styles.pills}>
+              {folders.map((f) => (
+                <Pill key={f.id} label={f.name} selected={folderId === f.id} onPress={() => setFolderId(f.id)} />
+              ))}
+            </View>
+
+            <Text style={styles.label}>سياسة التنزيل للجمهور</Text>
+            <View style={styles.pills}>
+              <Pill label="قراءة فقط من التطبيق" selected={downloadPolicy === "READ_ONLY"} onPress={() => setDownloadPolicy("READ_ONLY")} />
+              <Pill label="السماح بتنزيل نسخة PDF" selected={downloadPolicy === "DOWNLOAD_ALLOWED"} onPress={() => setDownloadPolicy("DOWNLOAD_ALLOWED")} />
+            </View>
+
+            <Text style={styles.label}>لون الغلاف البديل</Text>
+            <View style={styles.pills}>
+              <Pill label="أخضر" selected={coverKey === "green"} onPress={() => setCoverKey("green")} />
+              <Pill label="كريمي" selected={coverKey === "cream"} onPress={() => setCoverKey("cream")} />
+              <Pill label="أزرق مخضر (تيل)" selected={coverKey === "teal"} onPress={() => setCoverKey("teal")} />
+            </View>
+
+            <View style={{ marginTop: 14 }}>
+              <PrimaryButton
+                title={pdfAsset ? `تم اختيار: ${pdfAsset.name}` : editingBook?.pdfPath ? "تغيير ملف PDF المرفوع" : "اختيار ملف PDF للكتاب"}
+                variant="outline"
+                icon="file-pdf-box"
+                onPress={() => void choosePdf()}
+              />
+              <Text style={styles.formNote}>يُرفع الملف كبيانات باينري كاملة وموثوقة دون فقد أي بايت.</Text>
+            </View>
+
+            <View style={{ marginTop: 10 }}>
+              <PrimaryButton
+                title={coverAsset ? `تم اختيار الغلاف: ${coverAsset.name}` : editingBook?.coverPath ? "تغيير صورة الغلاف" : "اختيار صورة مخصصة للغلاف (اختياري)"}
+                variant="outline"
+                icon="image-outline"
+                onPress={() => void chooseCover()}
+              />
+              <Text style={styles.formNote}>صيغ مدعومة: JPG، PNG، WebP بحجم أقصى 5 ميجابايت.</Text>
+            </View>
+
+            <PrimaryButton
+              title={saving ? "جارٍ الحفظ والرفع..." : editingBook ? "تحديث بيانات الكتاب" : "حفظ الكتاب كمسودة"}
+              icon="content-save-outline"
+              onPress={() => void saveBook()}
+              busy={saving}
+              style={{ marginTop: 16 }}
+            />
+
+            {editingBook ? (
+              <PrimaryButton
+                title="إلغاء التعديل والعودة"
+                variant="outline"
+                onPress={resetBookForm}
+                style={{ marginTop: 8 }}
+              />
+            ) : null}
+          </View>
+        ) : null}
+
+        {/* Books List Panel */}
+        <View style={styles.panel}>
+          <View style={styles.listHeading}>
+            <Text style={styles.panelTitle}>قائمة الكتب ({books.length.toLocaleString("ar-EG")})</Text>
+            <MaterialCommunityIcons name="book-multiple-outline" size={20} color={palette.green} />
+          </View>
+
+          {/* Filter Pills */}
+          <View style={[styles.pills, { marginBottom: 12 }]}>
+            <Pill label={`الكل (${books.length})`} selected={bookFilterTab === "all"} onPress={() => setBookFilterTab("all")} />
+            <Pill label={`المنشورة (${books.filter((b) => b.published && !b.isArchived).length})`} selected={bookFilterTab === "published"} onPress={() => setBookFilterTab("published")} />
+            <Pill label={`المسودات (${books.filter((b) => !b.published && !b.isArchived).length})`} selected={bookFilterTab === "draft"} onPress={() => setBookFilterTab("draft")} />
+            <Pill label={`المؤرشفة (${books.filter((b) => b.isArchived).length})`} selected={bookFilterTab === "archived"} onPress={() => setBookFilterTab("archived")} />
+          </View>
+
+          {filteredBooks.length === 0 ? (
+            <Text style={styles.formNote}>لا توجد كتب تطابق التصفية الحالية.</Text>
+          ) : (
+            filteredBooks.map((book) => {
+              const canEditThisBook = isAdmin || (roles.includes("content_manager") && !book.published);
+              const isDeleting = pendingDeleteBookId === book.id;
+
+              return (
+                <View key={book.id} style={styles.bookRow}>
+                  <View style={{ flex: 1, alignItems: "flex-end" }}>
+                    <Text style={styles.bookTitle} numberOfLines={2}>{book.title}</Text>
+                    <Text style={styles.bookAuthor}>{book.author || "مؤلف غير محدد"}</Text>
+                  </View>
+
+                  <View style={styles.badgeGroup}>
+                    {book.isArchived ? (
+                      <View style={[styles.badge, styles.badgeArchived]}>
+                        <Text style={[styles.badgeText, styles.badgeArchivedText]}>مؤرشف</Text>
+                      </View>
+                    ) : book.published ? (
+                      <View style={[styles.badge, styles.badgePublished]}>
+                        <Text style={[styles.badgeText, styles.badgePublishedText]}>منشور</Text>
+                      </View>
+                    ) : (
+                      <View style={[styles.badge, styles.badgeDraft]}>
+                        <Text style={[styles.badgeText, styles.badgeDraftText]}>مسودة</Text>
+                      </View>
+                    )}
+                  </View>
+
+                  <View style={styles.bookActionGroup}>
+                    {canEditThisBook ? (
+                      <PrimaryButton
+                        title="تعديل"
+                        variant="outline"
+                        onPress={() => startEditing(book)}
+                        style={styles.actionBtn}
+                      />
+                    ) : null}
+
+                    {canManageBooks ? (
+                      <PrimaryButton
+                        title={book.isArchived ? "استعادة" : "أرشفة"}
+                        variant="outline"
+                        onPress={() => void toggleArchived(book)}
+                        busy={busyBook === book.id}
+                        style={styles.actionBtn}
+                      />
+                    ) : null}
+
+                    {canPublish && !book.isArchived ? (
+                      <PrimaryButton
+                        title={book.published ? "إلغاء النشر" : "نشر"}
+                        variant={book.published ? "outline" : "secondary"}
+                        onPress={() => void togglePublished(book.id, book.published)}
+                        busy={busyBook === book.id}
+                        style={styles.actionBtn}
+                      />
+                    ) : null}
+
+                    {canManageBooks ? (
+                      <PrimaryButton
+                        title="حذف"
+                        variant="outline"
+                        onPress={() => setPendingDeleteBookId(isDeleting ? null : book.id)}
+                        style={[styles.actionBtn, styles.deleteAction]}
+                      />
+                    ) : null}
+                  </View>
+
+                  {/* Inline Delete Confirmation */}
+                  {isDeleting ? (
+                    <View style={styles.confirmBox}>
+                      <Text style={styles.confirmText}>
+                        سيُحذف كتاب «{book.title}» نهائياً من قاعدة البيانات، وسيتم حذف ملف الـ PDF وصورة الغلاف من التخزين، بالإضافة لمسح أي نسخة مخزنة على أجهزة القراء.
+                      </Text>
+                      <View style={{ flexDirection: "row-reverse", gap: 8 }}>
+                        <PrimaryButton
+                          title="تأكيد الحذف الشامل"
+                          variant="outline"
+                          onPress={() => void deleteBook(book)}
+                          busy={busyBook === book.id}
+                          style={styles.deleteAction}
+                        />
+                        <PrimaryButton
+                          title="إلغاء"
+                          variant="outline"
+                          onPress={() => setPendingDeleteBookId(null)}
+                        />
+                      </View>
+                    </View>
+                  ) : null}
+                </View>
+              );
+            })
+          )}
+        </View>
+
+        {/* Staff Management Panel (Admin only) */}
         {isAdmin ? (
           <View style={styles.panel}>
             <View style={styles.listHeading}>
@@ -518,26 +775,63 @@ export default function AdminScreen() {
               <MaterialCommunityIcons name="account-cog-outline" size={20} color={palette.green} />
             </View>
             <Text style={styles.formNote}>هذه الأدوات للمدير الرئيسي فقط. الحسابات المنشأة هنا تحصل على كلمة مرور مباشرة ودور محدد.</Text>
-            {staffFeedback ? <View accessibilityRole="alert" style={[styles.feedbackBanner, styles.inlineFeedback, staffFeedback.tone === "success" ? styles.feedbackSuccess : styles.feedbackError]}><Text style={[styles.feedbackText, staffFeedback.tone === "success" ? styles.feedbackSuccessText : styles.feedbackErrorText]}>{staffFeedback.message}</Text></View> : null}
+
+            {staffFeedback ? (
+              <View
+                accessibilityRole="alert"
+                style={[
+                  styles.feedbackBanner,
+                  styles.inlineFeedback,
+                  staffFeedback.tone === "success" ? styles.feedbackSuccess : styles.feedbackError,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.feedbackText,
+                    staffFeedback.tone === "success" ? styles.feedbackSuccessText : styles.feedbackErrorText,
+                  ]}
+                >
+                  {staffFeedback.message}
+                </Text>
+              </View>
+            ) : null}
+
             <Text style={styles.label}>البريد الإلكتروني للعضو الجديد</Text>
             <TextInput {...inputProps} value={staffEmail} onChangeText={setStaffEmail} placeholder="name@example.com" keyboardType="email-address" autoCapitalize="none" style={styles.input} />
+
             <Text style={styles.label}>كلمة المرور المؤقتة (12 حرفًا على الأقل)</Text>
             <TextInput {...inputProps} value={staffPassword} onChangeText={setStaffPassword} placeholder="أنشئ كلمة مرور قوية" secureTextEntry autoCapitalize="none" style={styles.input} />
+
             <Text style={styles.label}>الدور</Text>
-            <View style={styles.pills}>{staffRoleOptions.map((option) => <Pill key={option.value} label={option.label} selected={staffRole === option.value} onPress={() => setStaffRole(option.value)} />)}</View>
+            <View style={styles.pills}>
+              {staffRoleOptions.map((option) => (
+                <Pill key={option.value} label={option.label} selected={staffRole === option.value} onPress={() => setStaffRole(option.value)} />
+              ))}
+            </View>
+
             <PrimaryButton title="إنشاء حساب عضو الفريق" onPress={() => void createStaffUser()} busy={staffBusy} style={{ marginTop: 12 }} />
-            <View style={styles.listHeading}><Text style={[styles.panelTitle, { marginTop: 20 }]}>الحسابات المخولة</Text></View>
+
+            <View style={styles.listHeading}>
+              <Text style={[styles.panelTitle, { marginTop: 20 }]}>الحسابات المخولة</Text>
+            </View>
             <PrimaryButton title={staffUsersLoading ? "جارٍ التحديث…" : "تحديث القائمة"} variant="outline" onPress={() => void loadStaffUsers()} busy={staffUsersLoading} style={styles.refreshButton} />
+
             {staffUsersLoading && staffUsers.length === 0 ? <Text style={styles.formNote}>جارٍ تحميل أعضاء الفريق…</Text> : null}
             {!staffUsersLoading && staffUsers.length === 0 && !staffFeedback ? <Text style={styles.formNote}>لا توجد حسابات فريق لعرضها.</Text> : null}
+
             {staffUsers.map((member) => (
               <View key={member.id} style={styles.staffUserCard}>
                 <Text style={styles.staffEmail}>{member.email || "بريد غير متاح"}</Text>
                 <Text style={styles.staffRoles}>{member.roles.map((role) => staffRoleOptions.find((item) => item.value === role)?.label ?? role).join("، ")}</Text>
                 <View style={styles.staffActions}>
                   <PrimaryButton title="تغيير كلمة المرور" variant="outline" onPress={() => { setPasswordTargetId(passwordTargetId === member.id ? null : member.id); setReplacementPassword(""); setPendingDeleteUserId(null); }} style={styles.staffActionButton} />
-                  {member.id !== session.user.id ? <PrimaryButton title="حذف الحساب" variant="outline" onPress={() => { setPendingDeleteUserId(pendingDeleteUserId === member.id ? null : member.id); setPasswordTargetId(null); }} style={[styles.staffActionButton, styles.deleteAction]} /> : <Text style={styles.formNote}>هذا حسابك الحالي؛ لا يمكن حذفه من هنا.</Text>}
+                  {member.id !== session.user.id ? (
+                    <PrimaryButton title="حذف الحساب" variant="outline" onPress={() => { setPendingDeleteUserId(pendingDeleteUserId === member.id ? null : member.id); setPasswordTargetId(null); }} style={[styles.staffActionButton, styles.deleteAction]} />
+                  ) : (
+                    <Text style={styles.formNote}>هذا حسابك الحالي؛ لا يمكن حذفه من هنا.</Text>
+                  )}
                 </View>
+
                 {passwordTargetId === member.id ? (
                   <View style={styles.inlineEditor}>
                     <Text style={styles.label}>كلمة المرور الجديدة</Text>
@@ -545,6 +839,7 @@ export default function AdminScreen() {
                     <PrimaryButton title="حفظ كلمة المرور" onPress={() => void updateStaffPassword(member.id)} busy={staffBusy} style={{ marginTop: 8 }} />
                   </View>
                 ) : null}
+
                 {pendingDeleteUserId === member.id ? (
                   <View style={styles.confirmBox}>
                     <Text style={styles.confirmText}>سيُحذف حساب هذا العضو نهائيًا، ولن يستطيع تسجيل الدخول. لا يمكن التراجع عن ذلك.</Text>
@@ -557,7 +852,13 @@ export default function AdminScreen() {
           </View>
         ) : null}
 
-        <View style={styles.notice}><MaterialCommunityIcons name="shield-check-outline" size={18} color={palette.green} /><Text style={styles.noticeText}>تُفرض صلاحيات الكتب في قاعدة البيانات عبر RLS. إدارة الحسابات تمر عبر دالة خادمية تتحقق من جلسة Supabase ودور المدير الرئيسي؛ لا يوجد مفتاح خدمة داخل التطبيق.</Text></View>
+        <View style={styles.notice}>
+          <MaterialCommunityIcons name="shield-check-outline" size={18} color={palette.green} />
+          <Text style={styles.noticeText}>
+            تُفرض صلاحيات الكتب في قاعدة البيانات عبر RLS. إدارة الحسابات تمر عبر دالة خادمية تتحقق من جلسة Supabase ودور المدير الرئيسي؛ لا يوجد مفتاح خدمة داخل التطبيق.
+          </Text>
+        </View>
+
         <PrimaryButton title="تسجيل الخروج" variant="outline" onPress={() => void signOut()} style={{ marginHorizontal: 18, marginTop: 8 }} />
       </ScrollView>
     </AppScreen>
@@ -585,15 +886,20 @@ const styles = StyleSheet.create({
   pills: { flexDirection: "row-reverse", flexWrap: "wrap", gap: 7 },
   formNote: { color: palette.muted, fontSize: 11, lineHeight: 18, textAlign: "right", marginTop: 9 },
   listHeading: { flexDirection: "row-reverse", alignItems: "center", justifyContent: "flex-start", gap: 7 },
-  bookRow: { flexDirection: "row-reverse", alignItems: "center", gap: 7, borderTopWidth: 1, borderTopColor: palette.border, paddingVertical: 12, flexWrap: "wrap" },
-  bookTitle: { color: palette.ink, fontSize: 12, fontWeight: "800", textAlign: "right" },
-  bookAuthor: { color: palette.muted, fontSize: 10, textAlign: "right", marginTop: 4 },
-  badge: { borderRadius: 999, paddingHorizontal: 8, paddingVertical: 5 },
+  bookRow: { flexDirection: "column", borderTopWidth: 1, borderTopColor: palette.border, paddingVertical: 12, gap: 8 },
+  bookTitle: { color: palette.ink, fontSize: 13, fontWeight: "800", textAlign: "right", width: "100%" },
+  bookAuthor: { color: palette.muted, fontSize: 11, textAlign: "right", marginTop: 2, width: "100%" },
+  badgeGroup: { flexDirection: "row-reverse", gap: 6, marginVertical: 2 },
+  badge: { borderRadius: 999, paddingHorizontal: 8, paddingVertical: 4 },
   badgePublished: { backgroundColor: palette.greenSoft },
   badgeDraft: { backgroundColor: palette.goldSoft },
-  badgeText: { fontSize: 9, fontWeight: "800" },
+  badgeArchived: { backgroundColor: "#f5ece6", borderWidth: 1, borderColor: "#c49a80" },
+  badgeText: { fontSize: 10, fontWeight: "800" },
   badgePublishedText: { color: palette.green },
   badgeDraftText: { color: "#725716" },
+  badgeArchivedText: { color: "#8c4a28" },
+  bookActionGroup: { flexDirection: "row-reverse", flexWrap: "wrap", gap: 6, marginTop: 4 },
+  actionBtn: { minHeight: 36, paddingHorizontal: 10, paddingVertical: 6 },
   publishButton: { minHeight: 37, paddingHorizontal: 9, paddingVertical: 7 },
   refreshButton: { minHeight: 38, paddingVertical: 7, marginBottom: 4 },
   staffUserCard: { borderTopWidth: 1, borderTopColor: palette.border, paddingVertical: 13, marginTop: 10 },
@@ -603,7 +909,7 @@ const styles = StyleSheet.create({
   staffActionButton: { minHeight: 38, paddingHorizontal: 10, paddingVertical: 7 },
   deleteAction: { borderColor: palette.danger },
   inlineEditor: { marginTop: 8, padding: 10, borderRadius: 12, backgroundColor: palette.white },
-  confirmBox: { marginTop: 10, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: palette.danger, backgroundColor: "#fff8f6" },
+  confirmBox: { marginTop: 8, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: palette.danger, backgroundColor: "#fff8f6" },
   confirmText: { color: palette.danger, fontSize: 12, lineHeight: 19, textAlign: "right", marginBottom: 9 },
   notice: { marginHorizontal: 18, marginTop: 14, flexDirection: "row-reverse", alignItems: "flex-start", gap: 8, padding: 13, borderRadius: 14, backgroundColor: palette.greenSoft },
   noticeText: { flex: 1, color: palette.greenDark, fontSize: 11, lineHeight: 19, textAlign: "right" },

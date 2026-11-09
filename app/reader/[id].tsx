@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -17,8 +17,9 @@ import * as Linking from "expo-linking";
 import * as WebBrowser from "expo-web-browser";
 import { AppScreen, FeedbackPanel, PrimaryButton } from "../../components/ui";
 import { useApp } from "../../lib/app-context";
-import { useLocalLibrary } from "../../lib/local-library";
+import { deleteLocalBookCache, ensureValidLocalPdf, useLocalLibrary } from "../../lib/local-library";
 import { canOfferDownload } from "../../lib/library-utils";
+import { extractStoragePath } from "../../lib/book-upload";
 import { supabase } from "../../lib/supabase";
 import { palette } from "../../lib/theme";
 
@@ -92,11 +93,11 @@ function buildPdfHtml(pdfUrl: string, initialPage: number): string {
     #error-box {
       display: none;
       margin: 40px 16px;
-      padding: 18px;
-      background: rgba(192, 57, 43, 0.2);
+      padding: 20px;
+      background: rgba(192, 57, 43, 0.22);
       border: 1px solid #c0392b;
       border-radius: 12px;
-      color: #ff8577;
+      color: #ff9d91;
       text-align: center;
       font-size: 13px;
       line-height: 22px;
@@ -222,8 +223,13 @@ function buildPdfHtml(pdfUrl: string, initialPage: number): string {
         const box = document.getElementById('error-box');
         if (box) {
           box.style.display = 'block';
-          box.innerHTML = '<div>تعذر عرض ملف الكتاب مباشرة.</div>' +
-            '<div style="font-size:11px; margin-top:6px; opacity:0.8;">' + (err.message || '') + '</div>';
+          const isZeroByte = err && (String(err.message).includes('0') || String(err.message).includes('empty') || String(err.message).includes('signature') || String(err.message).includes('Missing PDF'));
+          box.innerHTML = '<div style="font-weight:800; font-size:15px; margin-bottom:6px;">تعذر عرض صفحات الكتاب</div>' +
+            '<div style="font-size:12px; line-height:20px; opacity:0.9;">' +
+            (isZeroByte
+              ? 'يبدو أن ملف الـ PDF المرفوع فارغ (0 بايت) أو غير مكتمل على السحابة. يرجى إعادة رفع ملف الكتاب الصالح من لوحة الإدارة.'
+              : (err.message || 'تعذر تحميل ملف PDF.')) +
+            '</div>';
         }
         notifyRN({ type: 'error', message: err.message || 'load_error' });
       });
@@ -238,14 +244,14 @@ function buildPdfHtml(pdfUrl: string, initialPage: number): string {
 export default function ReaderScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
-  const { books, isLoading } = useApp();
+  const { books, isLoading, canManageBooks } = useApp();
   const local = useLocalLibrary();
   const book = books.find((item) => item.id === id);
   const bookTitle = book?.title ?? "";
   const bookId = book?.id;
   const webViewRef = useRef<WebView>(null);
 
-  const [signedPdfUrl, setSignedPdfUrl] = useState<string | null>(null);
+  const [pdfDisplayUrl, setPdfDisplayUrl] = useState<string | null>(null);
   const [loadingPdf, setLoadingPdf] = useState(true);
   const [pdfError, setPdfError] = useState<string | null>(null);
   const [detectedTotal, setDetectedTotal] = useState<number | null>(null);
@@ -265,40 +271,44 @@ export default function ReaderScreen() {
     setPageInput(String(page));
   }, [id, page]);
 
-  // Fetch signed URL automatically when screen loads
-  useEffect(() => {
-    if (!book?.pdfPath) {
+  const loadPdfSource = useCallback(async () => {
+    const rawPath = book?.pdfPath?.trim();
+    if (!rawPath || !book?.id) {
       setLoadingPdf(false);
       return;
     }
-    let active = true;
+
     setLoadingPdf(true);
     setPdfError(null);
 
-    supabase.storage
-      .from("library")
-      .createSignedUrl(book.pdfPath, 7200)
-      .then(({ data, error }) => {
-        if (!active) return;
-        if (error) {
-          setPdfError(error.message);
-        } else if (data?.signedUrl) {
-          setSignedPdfUrl(data.signedUrl);
-        } else {
-          setPdfError("لم يصدر رابط قراءة صالح.");
-        }
-        setLoadingPdf(false);
-      })
-      .catch((err) => {
-        if (!active) return;
-        setPdfError(err instanceof Error ? err.message : "تعذر الاتصال بملف الكتاب.");
-        setLoadingPdf(false);
-      });
+    // Resolve cloud URL: if it is already full URL use it; otherwise get public URL
+    let cloudUrl = rawPath;
+    if (!/^https?:\/\//i.test(rawPath)) {
+      const storageKey = extractStoragePath(rawPath) ?? rawPath;
+      const { data } = supabase.storage.from("library").getPublicUrl(storageKey);
+      cloudUrl = (data?.publicUrl ?? "").trim();
+    }
 
-    return () => {
-      active = false;
-    };
-  }, [book?.pdfPath]);
+    if (!cloudUrl) {
+      setPdfError("رابط ملف الكتاب غير متاح.");
+      setLoadingPdf(false);
+      return;
+    }
+
+    try {
+      // Validate local cache and fetch valid file or stream directly
+      const result = await ensureValidLocalPdf(book.id, cloudUrl);
+      setPdfDisplayUrl(result.uri || cloudUrl);
+    } catch {
+      setPdfDisplayUrl(cloudUrl);
+    } finally {
+      setLoadingPdf(false);
+    }
+  }, [book?.id, book?.pdfPath]);
+
+  useEffect(() => {
+    void loadPdfSource();
+  }, [loadPdfSource]);
 
   const setCurrentPage = (requestedPage: number, notifyWebView = true) => {
     if (!bookId || !Number.isFinite(requestedPage)) return;
@@ -320,19 +330,30 @@ export default function ReaderScreen() {
       } else if (data.type === "totalLoaded" && typeof data.total === "number") {
         setDetectedTotal(data.total);
       } else if (data.type === "error") {
-        // Logged or handled gracefully
+        const msg = String(data.message || "");
+        if (msg.includes("0") || msg.includes("empty") || msg.includes("signature")) {
+          setPdfError("ملف الكتاب تالف أو فارغ (حجمه صفر بايت). يرجى إعادة رفع نسخة صالحة من لوحة الإدارة.");
+        }
       }
     } catch {
       // Ignore non-json messages
     }
   };
 
+  const retryAndClearCache = async () => {
+    if (!book?.id) return;
+    setLoadingPdf(true);
+    setPdfError(null);
+    await deleteLocalBookCache(book.id);
+    await loadPdfSource();
+  };
+
   const openInExternalViewer = async () => {
-    if (!signedPdfUrl) return;
+    if (!pdfDisplayUrl) return;
     try {
-      await Linking.openURL(signedPdfUrl);
+      await Linking.openURL(pdfDisplayUrl);
     } catch {
-      await WebBrowser.openBrowserAsync(signedPdfUrl);
+      await WebBrowser.openBrowserAsync(pdfDisplayUrl);
     }
   };
 
@@ -343,8 +364,9 @@ export default function ReaderScreen() {
       return;
     }
     try {
+      const storageKey = extractStoragePath(book.pdfPath) ?? book.pdfPath;
       const { data, error } = await supabase.storage.from("library").createSignedUrl(
-        book.pdfPath,
+        storageKey,
         600,
         { download: `${book.title}.pdf` }
       );
@@ -364,9 +386,9 @@ export default function ReaderScreen() {
   };
 
   const pdfHtml = useMemo(() => {
-    if (!signedPdfUrl) return "";
-    return buildPdfHtml(signedPdfUrl, page);
-  }, [signedPdfUrl, page]);
+    if (!pdfDisplayUrl) return "";
+    return buildPdfHtml(pdfDisplayUrl, page);
+  }, [pdfDisplayUrl, page]);
 
   if (!book) {
     return (
@@ -395,7 +417,7 @@ export default function ReaderScreen() {
         </Text>
 
         <View style={styles.topActions}>
-          {book.pdfPath && signedPdfUrl ? (
+          {book.pdfPath && pdfDisplayUrl ? (
             <>
               <Pressable onPress={() => adjustZoom(0.25)} hitSlop={6} accessibilityLabel="تكبير">
                 <MaterialCommunityIcons name="magnify-plus-outline" size={21} color={palette.white} />
@@ -465,11 +487,30 @@ export default function ReaderScreen() {
               <MaterialCommunityIcons name="alert-circle-outline" size={48} color={palette.danger} />
               <Text style={styles.errorTitle}>تعذر تحميل ملف الكتاب</Text>
               <Text style={styles.errorText}>{pdfError}</Text>
-              <PrimaryButton
-                title="فتح في عارض خارجي"
-                onPress={() => void openInExternalViewer()}
-                style={{ marginTop: 14 }}
-              />
+              <View style={styles.errorActions}>
+                <PrimaryButton
+                  title="إعادة المحاولة ومسح الكاش"
+                  icon="refresh"
+                  onPress={() => void retryAndClearCache()}
+                  style={{ minWidth: 160 }}
+                />
+                <PrimaryButton
+                  title="فتح في عارض خارجي"
+                  icon="open-in-new"
+                  variant="outline"
+                  onPress={() => void openInExternalViewer()}
+                  style={{ minWidth: 140 }}
+                />
+              </View>
+              {canManageBooks ? (
+                <PrimaryButton
+                  title="تعديل الكتاب ورفع ملف سليم"
+                  icon="file-document-edit-outline"
+                  variant="secondary"
+                  onPress={() => router.push({ pathname: "/admin", params: { editBookId: book.id } })}
+                  style={{ marginTop: 12, minWidth: 200 }}
+                />
+              ) : null}
             </View>
           ) : (
             <WebView
@@ -590,6 +631,7 @@ const styles = StyleSheet.create({
   centerText: { color: palette.white, fontSize: 13, fontWeight: "700", marginTop: 14, textAlign: "center" },
   errorTitle: { color: palette.danger, fontSize: 16, fontWeight: "800", marginTop: 12 },
   errorText: { color: palette.muted, fontSize: 13, textAlign: "center", marginTop: 6, lineHeight: 20 },
+  errorActions: { flexDirection: "row-reverse", gap: 10, marginTop: 16, flexWrap: "wrap", justifyContent: "center" },
   reader: { flex: 1 },
   readerContent: { padding: 17, flexGrow: 1 },
   sampleBanner: {
