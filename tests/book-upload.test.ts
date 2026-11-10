@@ -29,6 +29,24 @@ describe("base64ToUint8Array", () => {
 });
 
 describe("resolveBookUploadBody", () => {
+  it("reads native file via expo-file-system/legacy and converts to non-empty Uint8Array", async () => {
+    const fakeContent = "محتوى كتاب تجريبي";
+    const base64 = Buffer.from(fakeContent).toString("base64");
+    vi.doMock("expo-file-system/legacy", () => ({
+      readAsStringAsync: vi.fn().mockResolvedValue(base64),
+      EncodingType: { Base64: "base64" },
+    }));
+
+    const result = await resolveBookUploadBody(
+      { uri: "file:///data/user/0/app/cache/sample.pdf" },
+      "android",
+    );
+
+    expect(result).toBeInstanceOf(Uint8Array);
+    expect(result.byteLength).toBeGreaterThan(0);
+    vi.doUnmock("expo-file-system/legacy");
+  });
+
   it("uses ArrayBuffer on web instead of traditional Blob", async () => {
     const rawBuffer = new Uint8Array([1, 2, 3, 4]).buffer;
     const browserFile = {

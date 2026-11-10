@@ -6,7 +6,7 @@ export async function getBookCacheDirectory(): Promise<string | null> {
     return null;
   }
   try {
-    const FileSystem: any = await import("expo-file-system");
+    const FileSystem: any = await import("expo-file-system/legacy");
     const baseDir = FileSystem.cacheDirectory || FileSystem.documentDirectory;
     if (!baseDir) return null;
     const dir = `${baseDir}books/`;
@@ -26,7 +26,7 @@ export async function getBookCacheDirectory(): Promise<string | null> {
 export async function deleteLocalBookCache(bookId: string): Promise<void> {
   if (!bookId) return;
   try {
-    const FileSystem: any = await import("expo-file-system");
+    const FileSystem: any = await import("expo-file-system/legacy");
     const dir = await getBookCacheDirectory();
     if (!dir) return;
     const targetFile = `${dir}${bookId}.pdf`;
@@ -54,7 +54,7 @@ export async function ensureValidLocalPdf(
   }
 
   try {
-    const FileSystem: any = await import("expo-file-system");
+    const FileSystem: any = await import("expo-file-system/legacy");
     const dir = await getBookCacheDirectory();
     if (!dir) return { uri: trimmedUrl, isLocal: false };
 

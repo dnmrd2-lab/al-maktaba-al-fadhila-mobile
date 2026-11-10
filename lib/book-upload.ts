@@ -1,3 +1,5 @@
+import * as FileSystem from "expo-file-system/legacy";
+
 export type PickedUploadAsset = {
   uri: string;
   file?: Blob | null;
@@ -31,25 +33,44 @@ export function base64ToUint8Array(base64: string): Uint8Array {
 /**
  * Supabase Storage expects ArrayBuffer or Uint8Array. Traditional Blob
  * on React Native mobile uploads 0-byte files, so we completely avoid Blob
- * on mobile and read native files as base64 via FileSystem and convert to
- * Uint8Array. On web, we read via ArrayBuffer.
+ * on mobile and read native files as Uint8Array via FileSystem legacy or modern API.
+ * On web, we read via ArrayBuffer.
  */
 export async function resolveBookUploadBody(
   asset: PickedUploadAsset,
   platform: string,
   makeNativeFile?: (uri: string) => Promise<ArrayBuffer | Uint8Array> | ArrayBuffer | Uint8Array,
 ): Promise<LibraryUploadBody> {
-  let body: LibraryUploadBody;
+  let body: LibraryUploadBody | undefined;
 
   if (platform !== "web") {
     if (makeNativeFile) {
       body = await makeNativeFile(asset.uri);
     } else {
-      const FileSystem = await import("expo-file-system");
-      const base64 = await FileSystem.readAsStringAsync(asset.uri, {
-        encoding: (FileSystem as any).EncodingType?.Base64 ?? "base64",
-      });
-      body = base64ToUint8Array(base64);
+      // 1. Try reading via modern File API if available
+      try {
+        const { File: ExpoFile } = await import("expo-file-system");
+        if (typeof ExpoFile === "function") {
+          const file = new ExpoFile(asset.uri);
+          if (typeof file.bytes === "function") {
+            const bytes = await file.bytes();
+            if (bytes && bytes.byteLength > 0) {
+              body = bytes;
+            }
+          }
+        }
+      } catch {
+        // Fall back to legacy FileSystem API
+      }
+
+      // 2. If modern API didn't resolve, use expo-file-system/legacy
+      if (!body) {
+        const FileSystem = await import("expo-file-system/legacy");
+        const base64 = await FileSystem.readAsStringAsync(asset.uri, {
+          encoding: (FileSystem as any).EncodingType?.Base64 ?? "base64",
+        });
+        body = base64ToUint8Array(base64);
+      }
     }
   } else {
     // Web environment: read as ArrayBuffer via fetch or file.arrayBuffer()

@@ -87,6 +87,15 @@ async function uploadLibraryAsset(
   return publicUrl || path;
 }
 
+const DEFAULT_FALLBACK_FOLDER: Folder = {
+  id: "c98df121-8f53-4ba8-a644-5952c45dc4e4",
+  slug: "general",
+  name: "الكتب العامة",
+  description: "القسم الافتراضي للكتب العامة",
+  locked: false,
+  sort: 1,
+};
+
 export default function AdminScreen() {
   const router = useRouter();
   const { editBookId } = useLocalSearchParams<{ editBookId?: string }>();
@@ -114,12 +123,12 @@ export default function AdminScreen() {
   const [description, setDescription] = useState("");
   const [category, setCategory] = useState("");
   const [pages, setPages] = useState("");
-  const [folderId, setFolderId] = useState("");
+  const [folderId, setFolderId] = useState<string>(DEFAULT_FALLBACK_FOLDER.id);
   const [coverKey, setCoverKey] = useState<"green" | "cream" | "teal">("green");
   const [downloadPolicy, setDownloadPolicy] = useState<DownloadPolicy>("READ_ONLY");
   const [pdfAsset, setPdfAsset] = useState<DocumentPicker.DocumentPickerAsset | null>(null);
 
-  const [dbFolders, setDbFolders] = useState<Folder[]>(folders);
+  const [dbFolders, setDbFolders] = useState<Folder[]>(folders.length > 0 ? folders : [DEFAULT_FALLBACK_FOLDER]);
 
   useEffect(() => {
     if (folders.length > 0) {
@@ -146,10 +155,10 @@ export default function AdminScreen() {
     }
   }, [folders]);
 
-  const activeFolders = dbFolders.length > 0 ? dbFolders : folders;
+  const activeFolders = dbFolders.length > 0 ? dbFolders : folders.length > 0 ? folders : [DEFAULT_FALLBACK_FOLDER];
 
   useEffect(() => {
-    if (!folderId && activeFolders.length > 0) {
+    if ((!folderId || !activeFolders.some((f) => f.id === folderId)) && activeFolders.length > 0) {
       setFolderId(activeFolders[0].id);
     }
   }, [activeFolders, folderId]);
@@ -181,7 +190,7 @@ export default function AdminScreen() {
     setDescription("");
     setCategory("");
     setPages("");
-    setFolderId(activeFolders[0]?.id ?? "");
+    setFolderId(activeFolders[0]?.id ?? DEFAULT_FALLBACK_FOLDER.id);
     setPdfAsset(null);
     setCoverAsset(null);
     setEditingBookId(null);
@@ -279,9 +288,13 @@ export default function AdminScreen() {
 
   const saveBook = async () => {
     setSaveFeedback(null);
-    const targetFolderId = folderId || (activeFolders.length > 0 ? activeFolders[0].id : "");
-    if (!title.trim() || !targetFolderId) {
-      setSaveFeedback({ tone: "error", message: "بيانات ناقصة: أدخل عنوان الكتاب واختر مجلدًا صالحًا." });
+    const targetFolderId = folderId || (activeFolders.length > 0 ? activeFolders[0].id : DEFAULT_FALLBACK_FOLDER.id);
+    if (!title.trim()) {
+      setSaveFeedback({ tone: "error", message: "بيانات ناقصة: أدخل عنوان الكتاب أولاً." });
+      return;
+    }
+    if (!targetFolderId) {
+      setSaveFeedback({ tone: "error", message: "بيانات ناقصة: اختر مجلداً أو قسماً صالحاً للكتاب." });
       return;
     }
     if (pages && (!Number.isInteger(Number(pages)) || Number(pages) < 0)) {
@@ -633,7 +646,7 @@ export default function AdminScreen() {
 
             <View style={styles.folderSection}>
               <View style={styles.folderHeader}>
-                <Text style={styles.label}>المجلد / القسم التابع له (إلزامي)</Text>
+                <Text style={styles.label}>المجلد / القسم التابع له (إلزامي ومحدد تلقائياً)</Text>
                 {activeFolders.find((f) => f.id === (folderId || activeFolders[0]?.id)) ? (
                   <View style={styles.selectedBadge}>
                     <MaterialCommunityIcons name="folder-check" size={14} color={palette.greenDark} />
