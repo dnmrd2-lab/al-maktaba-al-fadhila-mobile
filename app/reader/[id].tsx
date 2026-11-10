@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ActivityIndicator,
   Alert,
+  Dimensions,
   Platform,
   Pressable,
   ScrollView,
@@ -13,16 +14,15 @@ import {
 import { useLocalSearchParams, useRouter } from "expo-router";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
+import { StatusBar } from "expo-status-bar";
 import * as Linking from "expo-linking";
 import * as WebBrowser from "expo-web-browser";
-import { AppScreen, FeedbackPanel, PrimaryButton } from "../../components/ui";
+import { FeedbackPanel, PrimaryButton } from "../../components/ui";
 import { useApp } from "../../lib/app-context";
 import { deleteLocalBookCache, ensureValidLocalPdf, useLocalLibrary } from "../../lib/local-library";
 import { canOfferDownload } from "../../lib/library-utils";
 import { extractStoragePath } from "../../lib/book-upload";
 import {
-  isSpeaking,
-  speakArabicText,
   startArabicVoiceRecognition,
   stopArabicSpeech,
 } from "../../lib/speech-service";
@@ -49,32 +49,44 @@ function buildPdfHtml(pdfUrl: string, initialPage: number): string {
     * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
     html, body {
       width: 100%;
+      height: 100%;
       min-height: 100%;
-      background: #151c17;
+      margin: 0;
+      padding: 0;
+      background: #121814;
       color: #fbfbf9;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Cairo", sans-serif;
       overflow-x: hidden;
+      overflow-y: auto;
+      user-select: none;
+      -webkit-user-select: none;
     }
     #wrapper {
       display: flex;
       flex-direction: column;
       align-items: center;
+      justify-content: center;
       width: 100%;
       min-height: 100vh;
-      padding: 10px 4px 28px;
+      min-height: 100dvh;
+      padding: 0;
+      margin: 0;
     }
     #canvas-container {
       width: 100%;
+      min-height: 100vh;
+      min-height: 100dvh;
       display: flex;
       justify-content: center;
       align-items: center;
-      touch-action: pan-y pinch-zoom;
+      touch-action: pan-x pan-y pinch-zoom;
+      position: relative;
     }
     canvas {
       display: block;
-      box-shadow: 0 4px 22px rgba(0,0,0,0.65);
-      border-radius: 4px;
+      box-shadow: 0 6px 30px rgba(0,0,0,0.75);
       background: #ffffff;
+      max-width: 100%;
     }
     #loader {
       display: flex;
@@ -148,9 +160,18 @@ function buildPdfHtml(pdfUrl: string, initialPage: number): string {
 
       pdfDoc.getPage(num).then(function(page) {
         const dpr = Math.min(window.devicePixelRatio || 2, 3);
-        const containerWidth = Math.max(window.innerWidth - 12, 320);
+        const winW = window.innerWidth || document.documentElement.clientWidth || 360;
+        const winH = window.innerHeight || document.documentElement.clientHeight || 640;
         const unscaledViewport = page.getViewport({ scale: 1.0 });
-        const fitScale = (containerWidth / unscaledViewport.width) * userZoom;
+
+        let baseScale = (winW - 4) / unscaledViewport.width;
+        if (winW > winH) {
+          // Landscape mode: adapt smoothly to fit height or width comfortably
+          const heightFitScale = (winH - 8) / unscaledViewport.height;
+          baseScale = Math.min(baseScale, heightFitScale);
+        }
+
+        const fitScale = Math.max(baseScale * userZoom, 0.35);
         const viewport = page.getViewport({ scale: fitScale });
         
         canvas.width = Math.floor(viewport.width * dpr);
@@ -164,17 +185,6 @@ function buildPdfHtml(pdfUrl: string, initialPage: number): string {
           canvasContext: ctx,
           viewport: viewport
         };
-
-        // Extract text for TTS reading
-        page.getTextContent().then(function(tc) {
-          if (tc && tc.items) {
-            const strings = tc.items.map(function(it) { return it.str; }).filter(Boolean);
-            const text = strings.join(' ').replace(/\\s+/g, ' ').trim();
-            notifyRN({ type: 'pageText', page: num, text: text });
-          }
-        }).catch(function(e) {
-          // ignore text extraction errors
-        });
 
         return page.render(renderContext).promise;
       }).then(function() {
@@ -211,8 +221,84 @@ function buildPdfHtml(pdfUrl: string, initialPage: number): string {
 
     window.changeScale = function(delta) {
       userZoom = Math.min(Math.max(userZoom + delta, 0.75), 3.0);
+      notifyRN({ type: 'zoomChange', zoom: userZoom });
       if (pdfDoc) queueRenderPage(currentPage);
     };
+
+    window.resetScale = function() {
+      userZoom = 1.0;
+      notifyRN({ type: 'zoomChange', zoom: 1.0 });
+      if (pdfDoc) queueRenderPage(currentPage);
+    };
+
+    // Auto-rotation and resize listener - keeps currentPage without reloading PDF
+    let resizeTimer = null;
+    function handleScreenResize() {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(function() {
+        if (pdfDoc && !pageRendering) {
+          renderPage(currentPage);
+        }
+      }, 120);
+    }
+    window.addEventListener('resize', handleScreenResize);
+    window.addEventListener('orientationchange', handleScreenResize);
+
+    // Touch gesture handling: Single touch for swipe and single-tap for controls toggle
+    let touchStartX = 0;
+    let touchStartY = 0;
+    let touchStartTime = 0;
+    let touchCount = 0;
+
+    window.addEventListener('touchstart', function(e) {
+      touchCount = e.touches.length;
+      if (e.touches.length === 1) {
+        touchStartX = e.touches[0].clientX;
+        touchStartY = e.touches[0].clientY;
+        touchStartTime = Date.now();
+      }
+    }, { passive: true });
+
+    window.addEventListener('touchmove', function(e) {
+      if (e.touches.length > 1) {
+        touchCount = e.touches.length;
+      }
+    }, { passive: true });
+
+    window.addEventListener('touchend', function(e) {
+      if (touchCount !== 1 || !e.changedTouches || e.changedTouches.length === 0) {
+        return;
+      }
+
+      const endX = e.changedTouches[0].clientX;
+      const endY = e.changedTouches[0].clientY;
+      const deltaX = endX - touchStartX;
+      const deltaY = endY - touchStartY;
+      const elapsed = Date.now() - touchStartTime;
+
+      // 1. Single Tap in center/screen -> Toggle Immersive Controls
+      if (Math.abs(deltaX) < 12 && Math.abs(deltaY) < 12 && elapsed < 350) {
+        notifyRN({ type: 'toggleControls' });
+        return;
+      }
+
+      // 2. Swipe Gestures for Page Turns
+      // ONLY active when userZoom is 1.0 (unscaled) and single touch to avoid interfering with zoom panning
+      if (userZoom <= 1.05 && elapsed < 650) {
+        const absX = Math.abs(deltaX);
+        const absY = Math.abs(deltaY);
+        if (absX > 45 && absX > absY * 1.3) {
+          // In RTL Arabic books:
+          // Swipe right (finger moves right ->) flips to Next page
+          // Swipe left (finger moves left <-) flips to Previous page
+          if (deltaX > 45) {
+            notifyRN({ type: 'nextPage' });
+          } else if (deltaX < -45) {
+            notifyRN({ type: 'prevPage' });
+          }
+        }
+      }
+    }, { passive: true });
 
     window.searchInPdf = function(query) {
       if (!pdfDoc || !query) {
@@ -302,7 +388,7 @@ function buildPdfHtml(pdfUrl: string, initialPage: number): string {
 }
 
 export default function ReaderScreen() {
-  const { id, autoplay } = useLocalSearchParams<{ id: string; autoplay?: string }>();
+  const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const { books, isLoading, canManageBooks } = useApp();
   const local = useLocalLibrary();
@@ -327,18 +413,42 @@ export default function ReaderScreen() {
   const page = readingPosition?.bookId === id ? readingPosition.page : savedPage;
   const bookmarks = local.bookmarks[id] ?? [];
 
-  // Speech TTS state
-  const [isSpeakingActive, setIsSpeakingActive] = useState(false);
-  const [speechRate, setSpeechRate] = useState<number>(0.9);
-  const [pageTextMap, setPageTextMap] = useState<Record<number, string>>({});
+  // Immersive Mode (Full-screen overlay & toggle controls)
+  const [showControls, setShowControls] = useState(true);
+  const [currentZoom, setCurrentZoom] = useState(1.0);
 
-  // In-book Text & Voice Search state
+  // Resume Reading Toast
+  const [resumeToast, setResumeToast] = useState<{ visible: boolean; page: number }>({
+    visible: false,
+    page: 1,
+  });
+
+  // In-book Text & Voice Search state (STT preserved)
   const [searchModalOpen, setSearchModalOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchResults, setSearchResults] = useState<{ page: number; snippet: string }[]>([]);
   const [isVoiceSearching, setIsVoiceSearching] = useState(false);
   const [voiceSearchStatus, setVoiceSearchStatus] = useState<string | null>(null);
+
+  // Ensure speech is completely stopped on mount and unmount
+  useEffect(() => {
+    void stopArabicSpeech();
+    return () => {
+      void stopArabicSpeech();
+    };
+  }, []);
+
+  // Show Resume Toast if book was resumed beyond page 1
+  useEffect(() => {
+    if (savedPage > 1) {
+      setResumeToast({ visible: true, page: savedPage });
+      const timer = setTimeout(() => {
+        setResumeToast((prev) => ({ ...prev, visible: false }));
+      }, 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [id, savedPage]);
 
   useEffect(() => {
     setPageInput(String(page));
@@ -381,7 +491,7 @@ export default function ReaderScreen() {
     void loadPdfSource();
   }, [loadPdfSource]);
 
-  const setCurrentPage = (requestedPage: number, notifyWebView = true) => {
+  const setCurrentPage = useCallback((requestedPage: number, notifyWebView = true) => {
     if (!bookId || !Number.isFinite(requestedPage)) return;
     const nextPage = Math.min(maxPage, Math.max(1, Math.floor(requestedPage)));
     setReadingPosition({ bookId, page: nextPage });
@@ -391,67 +501,19 @@ export default function ReaderScreen() {
     if (notifyWebView && book?.pdfPath && webViewRef.current) {
       webViewRef.current.injectJavaScript(`window.goToPage && window.goToPage(${nextPage}); true;`);
     }
+  }, [bookId, maxPage, local, book?.pdfPath]);
 
-    // If speech was active, continue reading new page
-    if (isSpeakingActive) {
-      void speakCurrentPage(nextPage);
+  const handleNextPage = useCallback(() => {
+    if (!totalKnown || page < total) {
+      setCurrentPage(page + 1);
     }
-  };
+  }, [page, totalKnown, total, setCurrentPage]);
 
-  const speakCurrentPage = useCallback(
-    async (targetPageNum?: number) => {
-      const targetPage = targetPageNum ?? page;
-      const extracted = pageTextMap[targetPage];
-      let textToRead = "";
-
-      if (extracted && extracted.trim().length > 10) {
-        textToRead = extracted;
-      } else if (!book?.pdfPath) {
-        textToRead = pages[(targetPage - 1) % pages.length];
-      } else {
-        textToRead = `${bookTitle}. ${book?.author ? `لـ ${book.author}.` : ""} ${book?.description || ""}. صفحة رقم ${targetPage}.`;
-      }
-
-      setIsSpeakingActive(true);
-      await speakArabicText(textToRead, {
-        rate: speechRate,
-        onStart: () => setIsSpeakingActive(true),
-        onDone: () => setIsSpeakingActive(false),
-        onError: () => setIsSpeakingActive(false),
-      });
-    },
-    [page, pageTextMap, book?.pdfPath, book?.author, book?.description, bookTitle, pages, speechRate],
-  );
-
-  const stopReading = async () => {
-    setIsSpeakingActive(false);
-    await stopArabicSpeech();
-  };
-
-  const toggleSpeech = async () => {
-    if (isSpeakingActive) {
-      await stopReading();
-    } else {
-      await speakCurrentPage();
+  const handlePrevPage = useCallback(() => {
+    if (page > 1) {
+      setCurrentPage(page - 1);
     }
-  };
-
-  // Autoplay on mount when ?autoplay=true is supplied
-  useEffect(() => {
-    if (autoplay === "true" && book) {
-      const timer = setTimeout(() => {
-        void speakCurrentPage();
-      }, 750);
-      return () => clearTimeout(timer);
-    }
-  }, [autoplay, book, speakCurrentPage]);
-
-  // Cleanup speech on unmount
-  useEffect(() => {
-    return () => {
-      void stopArabicSpeech();
-    };
-  }, []);
+  }, [page, setCurrentPage]);
 
   const handleWebViewMessage = (event: WebViewMessageEvent) => {
     try {
@@ -460,8 +522,14 @@ export default function ReaderScreen() {
         setCurrentPage(data.page, false);
       } else if (data.type === "totalLoaded" && typeof data.total === "number") {
         setDetectedTotal(data.total);
-      } else if (data.type === "pageText" && typeof data.page === "number" && typeof data.text === "string") {
-        setPageTextMap((prev) => ({ ...prev, [data.page]: data.text }));
+      } else if (data.type === "toggleControls") {
+        setShowControls((prev) => !prev);
+      } else if (data.type === "nextPage") {
+        handleNextPage();
+      } else if (data.type === "prevPage") {
+        handlePrevPage();
+      } else if (data.type === "zoomChange" && typeof data.zoom === "number") {
+        setCurrentZoom(data.zoom);
       } else if (data.type === "searchResults") {
         setSearchResults(Array.isArray(data.matches) ? data.matches : []);
         setSearchLoading(false);
@@ -476,7 +544,7 @@ export default function ReaderScreen() {
     }
   };
 
-  // Execute in-book search
+  // Execute in-book text search
   const executeInBookSearch = useCallback(
     (queryToSearch: string) => {
       const q = queryToSearch.trim();
@@ -511,7 +579,7 @@ export default function ReaderScreen() {
     [book?.pdfPath, pages],
   );
 
-  // In-book voice search recognition
+  // In-book voice search (Microphone / STT preserved)
   const toggleInBookVoiceSearch = () => {
     if (isVoiceSearching) {
       setIsVoiceSearching(false);
@@ -589,118 +657,185 @@ export default function ReaderScreen() {
     }
   };
 
+  const resetZoom = () => {
+    if (webViewRef.current) {
+      webViewRef.current.injectJavaScript(`window.resetScale && window.resetScale(); true;`);
+    }
+  };
+
   const pdfHtml = useMemo(() => {
     if (!pdfDisplayUrl) return "";
     return buildPdfHtml(pdfDisplayUrl, page);
   }, [pdfDisplayUrl, page]);
 
+  // Touch handlers for non-pdf sample text
+  const sampleTouchRef = useRef<{ startX: number; startY: number; time: number } | null>(null);
+
+  const handleSampleTouchStart = (e: any) => {
+    const touch = e.nativeEvent.touches?.[0];
+    if (touch) {
+      sampleTouchRef.current = {
+        startX: touch.pageX,
+        startY: touch.pageY,
+        time: Date.now(),
+      };
+    }
+  };
+
+  const handleSampleTouchEnd = (e: any) => {
+    if (!sampleTouchRef.current) return;
+    const touch = e.nativeEvent.changedTouches?.[0];
+    if (!touch) return;
+    const deltaX = touch.pageX - sampleTouchRef.current.startX;
+    const deltaY = touch.pageY - sampleTouchRef.current.startY;
+    const elapsed = Date.now() - sampleTouchRef.current.time;
+
+    if (Math.abs(deltaX) < 12 && Math.abs(deltaY) < 12 && elapsed < 350) {
+      setShowControls((prev) => !prev);
+    } else if (elapsed < 600 && Math.abs(deltaX) > 40 && Math.abs(deltaX) > Math.abs(deltaY) * 1.3) {
+      if (deltaX > 40) {
+        handleNextPage();
+      } else if (deltaX < -40) {
+        handlePrevPage();
+      }
+    }
+    sampleTouchRef.current = null;
+  };
+
   if (!book) {
     return (
-      <AppScreen>
+      <View style={styles.fullScreenContainer}>
         {isLoading ? (
           <FeedbackPanel title="جارٍ تحميل الكتاب" loading />
         ) : (
           <FeedbackPanel title="لم يُعثر على الكتاب" action="العودة" onAction={() => router.back()} />
         )}
-      </AppScreen>
+      </View>
     );
   }
 
   const isBookmarked = bookmarks.includes(page);
 
   return (
-    <AppScreen edges={["top", "left", "right", "bottom"]}>
-      {/* Top Bar */}
-      <View style={styles.topbar}>
-        <Pressable onPress={() => router.back()} hitSlop={10} accessibilityLabel="العودة">
-          <MaterialCommunityIcons name="close" size={24} color={palette.white} />
+    <View style={styles.fullScreenContainer}>
+      <StatusBar hidden={!showControls} style="light" />
+
+      {/* Floating Exit Button in Immersive Mode (visible when controls are hidden) */}
+      {!showControls ? (
+        <Pressable
+          onPress={() => router.back()}
+          hitSlop={12}
+          style={styles.floatingExitBtn}
+          accessibilityLabel="الخروج من القارئ"
+        >
+          <MaterialCommunityIcons name="arrow-right" size={22} color={palette.white} />
+          <Text style={styles.floatingExitText}>خروج</Text>
         </Pressable>
+      ) : null}
 
-        <Text style={styles.topTitle} numberOfLines={1}>
-          {book.title}
-        </Text>
-
-        <View style={styles.topActions}>
-          {/* In-book Search & Voice Button */}
-          <Pressable
-            onPress={() => setSearchModalOpen((prev) => !prev)}
-            hitSlop={6}
-            accessibilityLabel="بحث صوتي داخل الكتاب"
-            style={[styles.topIconBtn, searchModalOpen && styles.topIconBtnActive]}
-          >
-            <MaterialCommunityIcons name="magnify" size={21} color={searchModalOpen ? palette.gold : palette.white} />
-          </Pressable>
-
-          {/* Audio TTS Button */}
-          <Pressable
-            onPress={() => void toggleSpeech()}
-            hitSlop={6}
-            accessibilityLabel={isSpeakingActive ? "إيقاف القراءة الصوتية" : "قراءة صوتية للصفحة"}
-            style={[styles.topIconBtn, isSpeakingActive && styles.topIconBtnActive]}
-          >
-            <MaterialCommunityIcons
-              name={isSpeakingActive ? "volume-high" : "headphones"}
-              size={21}
-              color={isSpeakingActive ? palette.gold : palette.white}
-            />
-          </Pressable>
-
-          {book.pdfPath && pdfDisplayUrl ? (
-            <>
-              <Pressable onPress={() => adjustZoom(0.25)} hitSlop={6} accessibilityLabel="تكبير">
-                <MaterialCommunityIcons name="magnify-plus-outline" size={21} color={palette.white} />
-              </Pressable>
-              <Pressable onPress={() => adjustZoom(-0.25)} hitSlop={6} accessibilityLabel="تصغير">
-                <MaterialCommunityIcons name="magnify-minus-outline" size={21} color={palette.white} />
-              </Pressable>
-              <Pressable onPress={() => void openInExternalViewer()} hitSlop={6} accessibilityLabel="فتح في عارض خارجي">
-                <MaterialCommunityIcons name="open-in-new" size={20} color={palette.white} />
-              </Pressable>
-            </>
-          ) : null}
-
-          {canOfferDownload(book) ? (
-            <Pressable onPress={() => void downloadPdf()} hitSlop={6} accessibilityLabel="تنزيل الكتاب">
-              <MaterialCommunityIcons name="download" size={21} color={palette.white} />
-            </Pressable>
-          ) : null}
-
-          <Pressable
-            onPress={() => local.toggleBookmark(book.id, page)}
-            hitSlop={8}
-            accessibilityLabel={isBookmarked ? "إزالة العلامة" : "إضافة علامة"}
-          >
-            <MaterialCommunityIcons
-              name={isBookmarked ? "bookmark" : "bookmark-outline"}
-              size={23}
-              color={isBookmarked ? "#E6D4A9" : palette.white}
-            />
-          </Pressable>
-        </View>
-      </View>
-
-      {/* TTS Audio Player Control Bar */}
-      <View style={styles.audioBar}>
-        <Pressable onPress={() => void toggleSpeech()} style={styles.audioPlayBtn}>
-          <MaterialCommunityIcons
-            name={isSpeakingActive ? "stop-circle" : "play-circle"}
-            size={24}
-            color={isSpeakingActive ? palette.gold : palette.greenDark}
-          />
-          <Text style={[styles.audioPlayText, isSpeakingActive && styles.audioPlayTextActive]}>
-            {isSpeakingActive ? `جارٍ القراءة الصوتية (ص ${page.toLocaleString("ar-EG")})` : "استمع للصفحة الحالية"}
+      {/* Resume Reading Toast Notification */}
+      {resumeToast.visible ? (
+        <View style={styles.toastContainer}>
+          <MaterialCommunityIcons name="bookmark-check" size={20} color={palette.gold} />
+          <Text style={styles.toastText}>
+            تم استئناف القراءة من صفحة {resumeToast.page.toLocaleString("ar-EG")}
           </Text>
-        </Pressable>
-
-        <View style={styles.audioSpeedRow}>
           <Pressable
-            onPress={() => setSpeechRate((r) => (r === 0.8 ? 1.0 : r === 1.0 ? 1.2 : 0.8))}
-            style={styles.speedChip}
+            onPress={() => {
+              setCurrentPage(1);
+              setResumeToast((p) => ({ ...p, visible: false }));
+            }}
+            style={styles.toastResetBtn}
           >
-            <Text style={styles.speedText}>{speechRate}x</Text>
+            <Text style={styles.toastResetText}>العودة للبداية</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => setResumeToast((p) => ({ ...p, visible: false }))}
+            hitSlop={8}
+            style={styles.toastCloseBtn}
+          >
+            <MaterialCommunityIcons name="close" size={16} color={palette.white} />
           </Pressable>
         </View>
-      </View>
+      ) : null}
+
+      {/* Top Bar (Immersive Control) */}
+      {showControls ? (
+        <View style={styles.topbar}>
+          {/* Back / Exit Button */}
+          <Pressable
+            onPress={() => router.back()}
+            hitSlop={10}
+            accessibilityLabel="العودة للمكتبة"
+            style={styles.exitButton}
+          >
+            <MaterialCommunityIcons name="close" size={24} color={palette.white} />
+            <Text style={styles.exitButtonText}>خروج</Text>
+          </Pressable>
+
+          <Text style={styles.topTitle} numberOfLines={1}>
+            {book.title}
+          </Text>
+
+          <View style={styles.topActions}>
+            {/* In-book Search & Voice Button (Microphone / STT preserved) */}
+            <Pressable
+              onPress={() => setSearchModalOpen((prev) => !prev)}
+              hitSlop={6}
+              accessibilityLabel="بحث صوتي داخل الكتاب"
+              style={[styles.topIconBtn, searchModalOpen && styles.topIconBtnActive]}
+            >
+              <MaterialCommunityIcons name="magnify" size={21} color={searchModalOpen ? palette.gold : palette.white} />
+            </Pressable>
+
+            {book.pdfPath && pdfDisplayUrl ? (
+              <>
+                <Pressable onPress={() => adjustZoom(0.25)} hitSlop={6} accessibilityLabel="تكبير">
+                  <MaterialCommunityIcons name="magnify-plus-outline" size={21} color={palette.white} />
+                </Pressable>
+                <Pressable onPress={() => adjustZoom(-0.25)} hitSlop={6} accessibilityLabel="تصغير">
+                  <MaterialCommunityIcons name="magnify-minus-outline" size={21} color={palette.white} />
+                </Pressable>
+                {currentZoom !== 1.0 ? (
+                  <Pressable onPress={resetZoom} hitSlop={6} accessibilityLabel="إعادة ضبط التكبير">
+                    <MaterialCommunityIcons name="fit-to-page-outline" size={20} color={palette.gold} />
+                  </Pressable>
+                ) : null}
+                <Pressable onPress={() => void openInExternalViewer()} hitSlop={6} accessibilityLabel="فتح في عارض خارجي">
+                  <MaterialCommunityIcons name="open-in-new" size={20} color={palette.white} />
+                </Pressable>
+              </>
+            ) : null}
+
+            {canOfferDownload(book) ? (
+              <Pressable onPress={() => void downloadPdf()} hitSlop={6} accessibilityLabel="تنزيل الكتاب">
+                <MaterialCommunityIcons name="download" size={21} color={palette.white} />
+              </Pressable>
+            ) : null}
+
+            <Pressable
+              onPress={() => local.toggleBookmark(book.id, page)}
+              hitSlop={8}
+              accessibilityLabel={isBookmarked ? "إزالة العلامة" : "إضافة علامة"}
+            >
+              <MaterialCommunityIcons
+                name={isBookmarked ? "bookmark" : "bookmark-outline"}
+                size={23}
+                color={isBookmarked ? "#E6D4A9" : palette.white}
+              />
+            </Pressable>
+
+            {/* Immersive full-screen toggle button */}
+            <Pressable
+              onPress={() => setShowControls(false)}
+              hitSlop={8}
+              accessibilityLabel="ملء الشاشة"
+            >
+              <MaterialCommunityIcons name="fullscreen" size={22} color={palette.white} />
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
 
       {/* In-Book Search & Voice Overlay Drawer */}
       {searchModalOpen ? (
@@ -721,7 +856,7 @@ export default function ReaderScreen() {
                 executeInBookSearch(t);
               }}
               onSubmitEditing={() => executeInBookSearch(searchQuery)}
-              placeholder="اكتب كلمة أو انطقها للبحث..."
+              placeholder="اكتب كلمة أو انطقها بالميكروفون..."
               placeholderTextColor="#879187"
               style={styles.searchDrawerInput}
               textAlign="right"
@@ -735,6 +870,7 @@ export default function ReaderScreen() {
             <Pressable
               onPress={toggleInBookVoiceSearch}
               style={[styles.drawerVoiceBtn, isVoiceSearching && styles.drawerVoiceBtnActive]}
+              accessibilityLabel="البحث الصوتي عبر الميكروفون"
             >
               <MaterialCommunityIcons
                 name={isVoiceSearching ? "microphone" : "microphone-outline"}
@@ -768,14 +904,7 @@ export default function ReaderScreen() {
                       }}
                       style={styles.pageJumpBadge}
                     >
-                      <Text style={styles.pageJumpBadgeText}>انتقال لص {res.page.toLocaleString("ar-EG")}</Text>
-                    </Pressable>
-                    <Pressable
-                      onPress={() => void speakArabicText(`في صفحة ${res.page}. ${res.snippet}`)}
-                      style={styles.speakSnippetBtn}
-                    >
-                      <MaterialCommunityIcons name="volume-high" size={16} color={palette.green} />
-                      <Text style={styles.speakSnippetText}>استماع للنتيجة</Text>
+                      <Text style={styles.pageJumpBadgeText}>انتقال لصفحة {res.page.toLocaleString("ar-EG")}</Text>
                     </Pressable>
                   </View>
                   <Text style={styles.searchResultSnippet}>{res.snippet}</Text>
@@ -789,19 +918,19 @@ export default function ReaderScreen() {
       ) : null}
 
       {/* Progress Line */}
-      <View style={styles.progressLine}>
-        {totalKnown ? (
+      {showControls && totalKnown ? (
+        <View style={styles.progressLine}>
           <View
             style={[
               styles.progressFill,
               { width: `${Math.min(100, Math.round((page / total) * 100))}%` },
             ]}
           />
-        ) : null}
-      </View>
+        </View>
+      ) : null}
 
       {/* Bookmarks Bar */}
-      {bookmarks.length ? (
+      {showControls && bookmarks.length ? (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.bookmarks}>
           {bookmarks.map((number) => (
             <Pressable key={number} style={styles.bookmarkChip} onPress={() => setCurrentPage(number)}>
@@ -811,12 +940,12 @@ export default function ReaderScreen() {
         </ScrollView>
       ) : null}
 
-      {/* Main Reader View */}
+      {/* Main Reader View (Takes 100% of space) */}
       {book.pdfPath ? (
         <View style={styles.readerContainer}>
           {loadingPdf ? (
             <View style={styles.centerBox}>
-              <ActivityIndicator size="large" color={palette.green} />
+              <ActivityIndicator size="large" color={palette.gold} />
               <Text style={styles.centerText}>جارٍ تجهيز ملف الكتاب للقراءة داخل التطبيق...</Text>
             </View>
           ) : pdfError ? (
@@ -864,7 +993,7 @@ export default function ReaderScreen() {
               startInLoadingState
               renderLoading={() => (
                 <View style={styles.centerBox}>
-                  <ActivityIndicator size="large" color={palette.green} />
+                  <ActivityIndicator size="large" color={palette.gold} />
                   <Text style={styles.centerText}>جارٍ عرض صفحات الكتاب...</Text>
                 </View>
               )}
@@ -872,78 +1001,179 @@ export default function ReaderScreen() {
           )}
         </View>
       ) : (
-        <ScrollView style={styles.reader} contentContainerStyle={styles.readerContent}>
-          <View style={styles.sampleBanner}>
-            <MaterialCommunityIcons name="information-outline" size={18} color={palette.gold} />
-            <Text style={styles.sampleBannerText}>نص تجريبي للعرض فقط — ليس محتوى الكتاب الأصلي.</Text>
-          </View>
-          <Text style={[styles.sampleText, { fontSize: 16 * local.fontScale }]}>
-            {pages[(page - 1) % pages.length]}
-          </Text>
-        </ScrollView>
+        <View
+          style={styles.reader}
+          onTouchStart={handleSampleTouchStart}
+          onTouchEnd={handleSampleTouchEnd}
+        >
+          <ScrollView contentContainerStyle={styles.readerContent}>
+            <View style={styles.sampleBanner}>
+              <MaterialCommunityIcons name="information-outline" size={18} color={palette.gold} />
+              <Text style={styles.sampleBannerText}>نص تجريبي للعرض فقط — ليس محتوى الكتاب الأصلي.</Text>
+            </View>
+            <Text style={[styles.sampleText, { fontSize: 16 * local.fontScale }]}>
+              {pages[(page - 1) % pages.length]}
+            </Text>
+          </ScrollView>
+        </View>
       )}
 
-      {/* Page Jump Row */}
-      <View style={styles.jumpRow}>
-        <Text style={styles.jumpHint}>الانتقال السريع لرقم صفحة:</Text>
-        <View style={styles.jumpControls}>
-          <TextInput
-            value={pageInput}
-            onChangeText={setPageInput}
-            keyboardType="number-pad"
-            returnKeyType="done"
-            onSubmitEditing={() => setCurrentPage(Number(pageInput))}
-            placeholder="رقم الصفحة"
-            placeholderTextColor={palette.muted}
-            style={styles.pageInput}
-            accessibilityLabel="رقم الصفحة الحالية"
-          />
-          <Pressable onPress={() => setCurrentPage(Number(pageInput))} style={styles.savePageButton}>
-            <Text style={styles.savePageText}>انتقال وحفظ</Text>
+      {/* Page Jump Bar (visible when controls are shown) */}
+      {showControls ? (
+        <View style={styles.jumpRow}>
+          <Text style={styles.jumpHint}>الانتقال السريع لرقم صفحة:</Text>
+          <View style={styles.jumpControls}>
+            <TextInput
+              value={pageInput}
+              onChangeText={setPageInput}
+              keyboardType="number-pad"
+              returnKeyType="done"
+              onSubmitEditing={() => setCurrentPage(Number(pageInput))}
+              placeholder="رقم الصفحة"
+              placeholderTextColor={palette.muted}
+              style={styles.pageInput}
+              accessibilityLabel="رقم الصفحة الحالية"
+            />
+            <Pressable onPress={() => setCurrentPage(Number(pageInput))} style={styles.savePageButton}>
+              <Text style={styles.savePageText}>انتقال وحفظ</Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
+
+      {/* Bottom Navigation Controls Bar (visible when controls are shown) */}
+      {showControls ? (
+        <View style={styles.controls}>
+          {/* Next Button (التالي) - in RTL placed forward */}
+          <Pressable
+            onPress={handleNextPage}
+            disabled={totalKnown && page >= total}
+            style={[styles.controlButton, totalKnown && page >= total && styles.disabled]}
+            accessibilityLabel="الصفحة التالية"
+          >
+            <MaterialCommunityIcons name="chevron-left" size={22} color={palette.green} />
+            <Text style={styles.controlText}>التالي</Text>
+          </Pressable>
+
+          {/* Current Page Counter */}
+          <View style={styles.pageCount}>
+            <Text style={styles.pageCountText}>
+              صفحة {page.toLocaleString("ar-EG")}
+              {totalKnown ? ` من ${total.toLocaleString("ar-EG")}` : ""}
+            </Text>
+            <Text style={styles.savedText}>موضع محفوظ تلقائياً على هذا الجهاز</Text>
+          </View>
+
+          {/* Previous Button (السابق) */}
+          <Pressable
+            onPress={handlePrevPage}
+            disabled={page <= 1}
+            style={[styles.controlButton, page <= 1 && styles.disabled]}
+            accessibilityLabel="الصفحة السابقة"
+          >
+            <Text style={styles.controlText}>السابق</Text>
+            <MaterialCommunityIcons name="chevron-right" size={22} color={palette.green} />
           </Pressable>
         </View>
-      </View>
-
-      {/* Navigation Controls */}
-      <View style={styles.controls}>
-        <Pressable
-          onPress={() => setCurrentPage(page + 1)}
-          disabled={totalKnown && page >= total}
-          style={[styles.controlButton, totalKnown && page >= total && styles.disabled]}
-        >
-          <MaterialCommunityIcons name="chevron-left" size={20} color={palette.green} />
-          <Text style={styles.controlText}>التالي</Text>
-        </Pressable>
-
-        <View style={styles.pageCount}>
-          <Text style={styles.pageCountText}>
-            صفحة {page.toLocaleString("ar-EG")}
-            {totalKnown ? ` من ${total.toLocaleString("ar-EG")}` : ""}
-          </Text>
-          <Text style={styles.savedText}>موضع محفوظ تلقائياً على هذا الجهاز</Text>
-        </View>
-
-        <Pressable
-          onPress={() => setCurrentPage(page - 1)}
-          disabled={page <= 1}
-          style={[styles.controlButton, page <= 1 && styles.disabled]}
-        >
-          <Text style={styles.controlText}>السابق</Text>
-          <MaterialCommunityIcons name="chevron-right" size={20} color={palette.green} />
-        </Pressable>
-      </View>
-    </AppScreen>
+      ) : null}
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  fullScreenContainer: {
+    flex: 1,
+    width: "100%",
+    height: "100%",
+    backgroundColor: "#121814",
+  },
+  floatingExitBtn: {
+    position: "absolute",
+    top: 28,
+    right: 16,
+    zIndex: 99,
+    flexDirection: "row-reverse",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "rgba(16, 54, 41, 0.85)",
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "rgba(197, 160, 89, 0.5)",
+  },
+  floatingExitText: {
+    color: palette.white,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  toastContainer: {
+    position: "absolute",
+    top: 64,
+    alignSelf: "center",
+    zIndex: 150,
+    backgroundColor: "#103629",
+    borderWidth: 1,
+    borderColor: palette.gold,
+    borderRadius: 14,
+    paddingVertical: 9,
+    paddingHorizontal: 14,
+    flexDirection: "row-reverse",
+    alignItems: "center",
+    gap: 9,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
+    elevation: 8,
+    maxWidth: "92%",
+  },
+  toastText: {
+    color: palette.white,
+    fontSize: 12,
+    fontWeight: "700",
+    textAlign: "right",
+  },
+  toastResetBtn: {
+    backgroundColor: "rgba(197, 160, 89, 0.25)",
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  toastResetText: {
+    color: palette.gold,
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  toastCloseBtn: {
+    padding: 3,
+  },
   topbar: {
     minHeight: 56,
+    paddingTop: Platform.OS === "android" ? 18 : 12,
+    paddingBottom: 10,
     paddingHorizontal: 14,
     flexDirection: "row-reverse",
     alignItems: "center",
     gap: 10,
     backgroundColor: palette.greenDark,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(197, 160, 89, 0.2)",
+    zIndex: 50,
+  },
+  exitButton: {
+    flexDirection: "row-reverse",
+    alignItems: "center",
+    gap: 4,
+    paddingVertical: 4,
+    paddingHorizontal: 6,
+    borderRadius: 8,
+    backgroundColor: "rgba(255, 255, 255, 0.12)",
+  },
+  exitButtonText: {
+    color: palette.white,
+    fontSize: 12,
+    fontWeight: "800",
   },
   topTitle: {
     flex: 1,
@@ -955,7 +1185,7 @@ const styles = StyleSheet.create({
   topActions: {
     flexDirection: "row-reverse",
     alignItems: "center",
-    gap: 12,
+    gap: 11,
   },
   topIconBtn: {
     padding: 3,
@@ -964,51 +1194,13 @@ const styles = StyleSheet.create({
   topIconBtnActive: {
     backgroundColor: "rgba(197, 160, 89, 0.25)",
   },
-  audioBar: {
-    minHeight: 42,
-    backgroundColor: "#112217",
-    borderBottomWidth: 1,
-    borderBottomColor: "rgba(197, 160, 89, 0.3)",
-    paddingHorizontal: 14,
-    flexDirection: "row-reverse",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  audioPlayBtn: {
-    flexDirection: "row-reverse",
-    alignItems: "center",
-    gap: 7,
-  },
-  audioPlayText: {
-    color: palette.white,
-    fontSize: 12,
-    fontWeight: "700",
-  },
-  audioPlayTextActive: {
-    color: palette.gold,
-  },
-  audioSpeedRow: {
-    flexDirection: "row-reverse",
-    alignItems: "center",
-    gap: 6,
-  },
-  speedChip: {
-    backgroundColor: "rgba(255, 255, 255, 0.12)",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 8,
-  },
-  speedText: {
-    color: palette.white,
-    fontSize: 11,
-    fontWeight: "800",
-  },
   searchDrawer: {
     backgroundColor: palette.surface,
     borderBottomWidth: 1,
     borderBottomColor: palette.border,
     padding: 12,
     maxHeight: 320,
+    zIndex: 60,
   },
   searchDrawerHeader: {
     flexDirection: "row-reverse",
@@ -1104,16 +1296,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "800",
   },
-  speakSnippetBtn: {
-    flexDirection: "row-reverse",
-    alignItems: "center",
-    gap: 4,
-  },
-  speakSnippetText: {
-    color: palette.green,
-    fontSize: 11,
-    fontWeight: "700",
-  },
   searchResultSnippet: {
     color: palette.ink,
     fontSize: 12,
@@ -1126,20 +1308,20 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginTop: 12,
   },
-  progressLine: { height: 3, backgroundColor: "#D9DDCF", alignItems: "flex-end" },
+  progressLine: { height: 3, backgroundColor: "#2b3b30", alignItems: "flex-end" },
   progressFill: { height: 3, backgroundColor: palette.gold },
-  bookmarks: { flexDirection: "row-reverse", gap: 7, paddingHorizontal: 12, paddingVertical: 8 },
+  bookmarks: { flexDirection: "row-reverse", gap: 7, paddingHorizontal: 12, paddingVertical: 8, backgroundColor: "#18241d" },
   bookmarkChip: { backgroundColor: palette.goldSoft, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 5 },
   bookmarkText: { color: palette.greenDark, fontWeight: "700", fontSize: 11 },
-  readerContainer: { flex: 1, backgroundColor: "#1a221d" },
-  webView: { flex: 1, backgroundColor: "#1a221d" },
+  readerContainer: { flex: 1, backgroundColor: "#121814" },
+  webView: { flex: 1, backgroundColor: "#121814" },
   centerBox: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24 },
   centerText: { color: palette.white, fontSize: 13, fontWeight: "700", marginTop: 14, textAlign: "center" },
   errorTitle: { color: palette.danger, fontSize: 16, fontWeight: "800", marginTop: 12 },
   errorText: { color: palette.muted, fontSize: 13, textAlign: "center", marginTop: 6, lineHeight: 20 },
   errorActions: { flexDirection: "row-reverse", gap: 10, marginTop: 16, flexWrap: "wrap", justifyContent: "center" },
-  reader: { flex: 1 },
-  readerContent: { padding: 17, flexGrow: 1 },
+  reader: { flex: 1, backgroundColor: "#121814" },
+  readerContent: { padding: 17, flexGrow: 1, justifyContent: "center" },
   sampleBanner: {
     flexDirection: "row-reverse",
     alignItems: "center",
@@ -1167,6 +1349,7 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: palette.border,
     backgroundColor: palette.surface,
+    zIndex: 50,
   },
   jumpHint: { color: palette.muted, fontSize: 11, textAlign: "right", marginBottom: 5, fontWeight: "600" },
   jumpControls: { flexDirection: "row-reverse", gap: 8, alignItems: "center" },
@@ -1191,7 +1374,7 @@ const styles = StyleSheet.create({
   },
   savePageText: { color: palette.white, fontSize: 11, fontWeight: "800" },
   controls: {
-    minHeight: 62,
+    minHeight: 60,
     flexDirection: "row-reverse",
     alignItems: "center",
     justifyContent: "space-between",
@@ -1199,11 +1382,12 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: palette.border,
     backgroundColor: palette.surface,
+    zIndex: 50,
   },
   controlButton: { flexDirection: "row-reverse", alignItems: "center", gap: 4, padding: 8 },
-  disabled: { opacity: 0.4 },
-  controlText: { color: palette.green, fontSize: 12, fontWeight: "800" },
+  disabled: { opacity: 0.35 },
+  controlText: { color: palette.green, fontSize: 13, fontWeight: "800" },
   pageCount: { alignItems: "center" },
-  pageCountText: { color: palette.ink, fontSize: 11, fontWeight: "800" },
+  pageCountText: { color: palette.ink, fontSize: 12, fontWeight: "800" },
   savedText: { color: palette.muted, fontSize: 9, marginTop: 2 },
 });

@@ -57,20 +57,6 @@ export function BookCard({
             />
           </Pressable>
         ) : null}
-
-        <Pressable
-          onPress={handleListen}
-          hitSlop={8}
-          accessibilityRole="button"
-          accessibilityLabel={`استمع صوتياً لكتاب: ${book.title}`}
-          style={[styles.actionBtn, styles.listenBtn]}
-        >
-          <MaterialCommunityIcons
-            name="volume-high"
-            size={18}
-            color={palette.green}
-          />
-        </Pressable>
       </View>
 
       <Pressable
@@ -99,10 +85,6 @@ export function BookCard({
           ) : null}
           <View style={styles.footer}>
             <Text style={styles.pages}>{formatPages(book.pages)}</Text>
-            <View style={styles.listenLabel}>
-              <MaterialCommunityIcons name="headphones" size={13} color={palette.green} />
-              <Text style={styles.listenLabelText}>استماع صوتي</Text>
-            </View>
             <MaterialCommunityIcons name="chevron-left" size={17} color={palette.green} />
           </View>
         </View>
@@ -139,10 +121,6 @@ const styles = StyleSheet.create({
     borderColor: palette.border,
     alignItems: "center",
     justifyContent: "center",
-  },
-  listenBtn: {
-    backgroundColor: palette.greenSoft,
-    borderColor: palette.green,
   },
   body: {
     minHeight: 142,
@@ -189,14 +167,4 @@ const styles = StyleSheet.create({
     marginTop: 9,
   },
   pages: { color: palette.muted, fontSize: 11 },
-  listenLabel: {
-    flexDirection: "row-reverse",
-    alignItems: "center",
-    gap: 4,
-    backgroundColor: palette.greenSoft,
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: 6,
-  },
-  listenLabelText: { color: palette.greenDark, fontSize: 10, fontWeight: "800" },
 });

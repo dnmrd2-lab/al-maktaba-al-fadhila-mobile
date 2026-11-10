@@ -18,7 +18,7 @@ const config: ExpoConfig = {
   owner: "dnmrd2s-team",
   slug: "al-qaraawi-library",
   version: "1.0.0",
-  orientation: "portrait",
+  orientation: "default",
   icon: "./assets/images/icon.png",
   scheme: "fadhila-library",
   userInterfaceStyle: "light",

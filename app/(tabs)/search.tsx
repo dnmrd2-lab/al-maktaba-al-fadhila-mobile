@@ -46,7 +46,7 @@ export default function SearchScreen() {
           setTimeout(() => {
             router.push({
               pathname: "/reader/[id]",
-              params: { id: topMatch.id, autoplay: "true" },
+              params: { id: topMatch.id },
             });
           }, 850);
         } else {
@@ -144,8 +144,7 @@ export default function SearchScreen() {
             book={item}
             favorite={local.favorites.includes(item.id)}
             onFavorite={() => local.toggleFavorite(item.id)}
-            onListen={() => router.push({ pathname: "/reader/[id]", params: { id: item.id, autoplay: "true" } })}
-            onPress={() => router.push({ pathname: "/book/[id]", params: { id: item.id } })}
+                        onPress={() => router.push({ pathname: "/book/[id]", params: { id: item.id } })}
           />
         )}
         ListEmptyComponent={
