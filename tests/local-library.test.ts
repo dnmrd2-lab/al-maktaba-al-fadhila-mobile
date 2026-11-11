@@ -1,3 +1,14 @@
+import { vi } from "vitest";
+vi.mock("expo-file-system/legacy", () => ({
+  cacheDirectory: "/mock/cache/",
+  documentDirectory: "/mock/docs/",
+  makeDirectoryAsync: vi.fn().mockResolvedValue(undefined),
+  getInfoAsync: vi.fn().mockResolvedValue({ exists: false, size: 0 }),
+  deleteAsync: vi.fn().mockResolvedValue(undefined),
+  downloadAsync: vi.fn().mockResolvedValue({ status: 200 }),
+  readAsStringAsync: vi.fn().mockResolvedValue(""),
+  EncodingType: { Base64: "base64" },
+}));
 import { describe, expect, it } from "vitest";
 import {
   deleteLocalBookCache,

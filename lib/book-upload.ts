@@ -47,30 +47,10 @@ export async function resolveBookUploadBody(
     if (makeNativeFile) {
       body = await makeNativeFile(asset.uri);
     } else {
-      // 1. Try reading via modern File API if available
-      try {
-        const { File: ExpoFile } = await import("expo-file-system");
-        if (typeof ExpoFile === "function") {
-          const file = new ExpoFile(asset.uri);
-          if (typeof file.bytes === "function") {
-            const bytes = await file.bytes();
-            if (bytes && bytes.byteLength > 0) {
-              body = bytes;
-            }
-          }
-        }
-      } catch {
-        // Fall back to legacy FileSystem API
-      }
-
-      // 2. If modern API didn't resolve, use expo-file-system/legacy
-      if (!body) {
-        const FileSystem = await import("expo-file-system/legacy");
-        const base64 = await FileSystem.readAsStringAsync(asset.uri, {
-          encoding: (FileSystem as any).EncodingType?.Base64 ?? "base64",
-        });
-        body = base64ToUint8Array(base64);
-      }
+      const base64 = await FileSystem.readAsStringAsync(asset.uri, {
+        encoding: (FileSystem as any).EncodingType?.Base64 ?? "base64",
+      });
+      body = base64ToUint8Array(base64);
     }
   } else {
     // Web environment: read as ArrayBuffer via fetch or file.arrayBuffer()

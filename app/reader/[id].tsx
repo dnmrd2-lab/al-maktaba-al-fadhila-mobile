@@ -19,7 +19,14 @@ import * as Linking from "expo-linking";
 import * as WebBrowser from "expo-web-browser";
 import { FeedbackPanel, PrimaryButton } from "../../components/ui";
 import { useApp } from "../../lib/app-context";
-import { deleteLocalBookCache, ensureValidLocalPdf, useLocalLibrary } from "../../lib/local-library";
+import {
+  deleteLocalBookCache,
+  ensureValidLocalPdf,
+  getLocalBookFilePath,
+  isBookCachedLocally,
+  readLocalBookBase64,
+  useLocalLibrary,
+} from "../../lib/local-library";
 import { canOfferDownload } from "../../lib/library-utils";
 import { extractStoragePath } from "../../lib/book-upload";
 import {
@@ -37,7 +44,10 @@ const samplePages = (title: string) => [
   "الخاتمة\n\nهذا ما تيسر إيراده، والحمد لله الذي بنعمته تتم الصالحات، وصلى الله وسلم على نبينا محمد وعلى آله وصحبه أجمعين.",
 ];
 
-function buildPdfHtml(pdfUrl: string, initialPage: number): string {
+function buildPdfHtml(
+  pdfSource: { url: string; base64?: string },
+  initialPage: number,
+): string {
   return `<!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
@@ -135,7 +145,8 @@ function buildPdfHtml(pdfUrl: string, initialPage: number): string {
   </div>
 
   <script>
-    const pdfUrl = ${JSON.stringify(pdfUrl)};
+    const pdfUrl = ${JSON.stringify(pdfSource.url || "")};
+    const pdfBase64 = ${JSON.stringify(pdfSource.base64 || "")};
     let currentPage = ${initialPage};
     let pdfDoc = null;
     let pageRendering = false;
@@ -344,17 +355,35 @@ function buildPdfHtml(pdfUrl: string, initialPage: number): string {
 
     function startLoad() {
       if (!window.pdfjsLib) {
-        setTimeout(startLoad, 200);
+        setTimeout(startLoad, 100);
         return;
       }
-      const loadingTask = pdfjsLib.getDocument({
-        url: pdfUrl,
+
+      var docConfig = {
         cMapUrl: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/cmaps/',
         cMapPacked: true,
         standardFontDataUrl: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/standard_fonts/',
         disableFontFace: true,
         enableXfa: false
-      });
+      };
+
+      if (pdfBase64 && pdfBase64.length > 50) {
+        try {
+          var binary = atob(pdfBase64);
+          var len = binary.length;
+          var bytes = new Uint8Array(len);
+          for (var i = 0; i < len; i++) {
+            bytes[i] = binary.charCodeAt(i);
+          }
+          docConfig.data = bytes;
+        } catch (e) {
+          docConfig.url = pdfUrl;
+        }
+      } else {
+        docConfig.url = pdfUrl;
+      }
+
+      const loadingTask = pdfjsLib.getDocument(docConfig);
 
       loadingTask.promise.then(function(pdf) {
         pdfDoc = pdf;
@@ -397,9 +426,14 @@ export default function ReaderScreen() {
   const bookId = book?.id;
   const webViewRef = useRef<WebView>(null);
 
-  const [pdfDisplayUrl, setPdfDisplayUrl] = useState<string | null>(null);
+  const [pdfSource, setPdfSource] = useState<{ url: string; base64?: string } | null>(null);
   const [loadingPdf, setLoadingPdf] = useState(true);
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
+  const [isLocalCached, setIsLocalCached] = useState(false);
   const [pdfError, setPdfError] = useState<string | null>(null);
+
+  const pdfDisplayUrl = pdfSource?.url ?? null;
   const [detectedTotal, setDetectedTotal] = useState<number | null>(null);
 
   const [readingPosition, setReadingPosition] = useState<{ bookId: string; page: number } | null>(null);
@@ -464,6 +498,27 @@ export default function ReaderScreen() {
     setLoadingPdf(true);
     setPdfError(null);
 
+    // 1. Fast path: check if book is already downloaded and stored locally
+    try {
+      const cached = await isBookCachedLocally(book.id);
+      if (cached) {
+        setIsLocalCached(true);
+        setIsDownloading(false);
+        setDownloadProgress(null);
+        const base64 = await readLocalBookBase64(book.id);
+        const localPath = await getLocalBookFilePath(book.id);
+        setPdfSource({
+          url: localPath || rawPath,
+          base64: base64 || undefined,
+        });
+        setLoadingPdf(false);
+        return;
+      }
+    } catch {
+      // Continue to cloud download if local check fails
+    }
+
+    // 2. Resolve cloud URL from Supabase storage
     let cloudUrl = rawPath;
     if (!/^https?:\/\//i.test(rawPath)) {
       const storageKey = extractStoragePath(rawPath) ?? rawPath;
@@ -477,12 +532,24 @@ export default function ReaderScreen() {
       return;
     }
 
+    // 3. First time opening: Download and cache with progress indicator
+    setIsDownloading(true);
+    setDownloadProgress(0);
+
     try {
-      const result = await ensureValidLocalPdf(book.id, cloudUrl);
-      setPdfDisplayUrl(result.uri || cloudUrl);
+      const result = await ensureValidLocalPdf(book.id, cloudUrl, (percent) => {
+        setDownloadProgress(percent);
+      });
+      setIsLocalCached(Boolean(result.isLocal));
+      setPdfSource({
+        url: result.uri || cloudUrl,
+        base64: result.base64,
+      });
     } catch {
-      setPdfDisplayUrl(cloudUrl);
+      setPdfSource({ url: cloudUrl });
     } finally {
+      setIsDownloading(false);
+      setDownloadProgress(null);
       setLoadingPdf(false);
     }
   }, [book?.id, book?.pdfPath]);
@@ -616,6 +683,7 @@ export default function ReaderScreen() {
     if (!book?.id) return;
     setLoadingPdf(true);
     setPdfError(null);
+    setIsLocalCached(false);
     await deleteLocalBookCache(book.id);
     await loadPdfSource();
   };
@@ -664,9 +732,9 @@ export default function ReaderScreen() {
   };
 
   const pdfHtml = useMemo(() => {
-    if (!pdfDisplayUrl) return "";
-    return buildPdfHtml(pdfDisplayUrl, page);
-  }, [pdfDisplayUrl, page]);
+    if (!pdfSource) return "";
+    return buildPdfHtml(pdfSource, page);
+  }, [pdfSource, page]);
 
   // Touch handlers for non-pdf sample text
   const sampleTouchRef = useRef<{ startX: number; startY: number; time: number } | null>(null);
@@ -946,7 +1014,18 @@ export default function ReaderScreen() {
           {loadingPdf ? (
             <View style={styles.centerBox}>
               <ActivityIndicator size="large" color={palette.gold} />
-              <Text style={styles.centerText}>جارٍ تجهيز ملف الكتاب للقراءة داخل التطبيق...</Text>
+              <Text style={styles.centerText}>
+                {downloadProgress !== null
+                  ? `جارٍ تنزيل وحفظ الكتاب للقراءة الفورية (${downloadProgress}%)...`
+                  : isLocalCached
+                  ? "جارٍ استدعاء الكتاب فورياً من ذاكرة الهاتف..."
+                  : "جارٍ فتح صفحات الكتاب..."}
+              </Text>
+              {downloadProgress !== null ? (
+                <View style={styles.downloadProgressBar}>
+                  <View style={[styles.downloadProgressBarFill, { width: `${downloadProgress}%` }]} />
+                </View>
+              ) : null}
             </View>
           ) : pdfError ? (
             <View style={styles.centerBox}>
@@ -994,7 +1073,18 @@ export default function ReaderScreen() {
               renderLoading={() => (
                 <View style={styles.centerBox}>
                   <ActivityIndicator size="large" color={palette.gold} />
-                  <Text style={styles.centerText}>جارٍ عرض صفحات الكتاب...</Text>
+                  <Text style={styles.centerText}>
+                    {downloadProgress !== null
+                      ? `جارٍ حفظ صفحات الكتاب (${downloadProgress}%)...`
+                      : isLocalCached
+                      ? "جارٍ فتح الكتاب من ذاكرة الهاتف..."
+                      : "جارٍ عرض صفحات الكتاب..."}
+                  </Text>
+                  {downloadProgress !== null ? (
+                    <View style={styles.downloadProgressBar}>
+                      <View style={[styles.downloadProgressBarFill, { width: `${downloadProgress}%` }]} />
+                    </View>
+                  ) : null}
                 </View>
               )}
             />
@@ -1315,6 +1405,19 @@ const styles = StyleSheet.create({
   bookmarkText: { color: palette.greenDark, fontWeight: "700", fontSize: 11 },
   readerContainer: { flex: 1, backgroundColor: "#121814" },
   webView: { flex: 1, backgroundColor: "#121814" },
+  downloadProgressBar: {
+    width: 220,
+    height: 6,
+    backgroundColor: "rgba(255, 255, 255, 0.15)",
+    borderRadius: 999,
+    overflow: "hidden",
+    marginTop: 16,
+  },
+  downloadProgressBarFill: {
+    height: "100%",
+    backgroundColor: palette.gold,
+    borderRadius: 999,
+  },
   centerBox: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24 },
   centerText: { color: palette.white, fontSize: 13, fontWeight: "700", marginTop: 14, textAlign: "center" },
   errorTitle: { color: palette.danger, fontSize: 16, fontWeight: "800", marginTop: 12 },

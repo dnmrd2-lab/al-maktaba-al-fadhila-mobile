@@ -1,3 +1,13 @@
+vi.mock("expo-file-system/legacy", () => ({
+  cacheDirectory: "/mock/cache/",
+  documentDirectory: "/mock/docs/",
+  makeDirectoryAsync: vi.fn().mockResolvedValue(undefined),
+  getInfoAsync: vi.fn().mockResolvedValue({ exists: false, size: 0 }),
+  deleteAsync: vi.fn().mockResolvedValue(undefined),
+  downloadAsync: vi.fn().mockResolvedValue({ status: 200 }),
+  readAsStringAsync: vi.fn().mockResolvedValue(Buffer.from("محتوى تجريبي").toString("base64")),
+  EncodingType: { Base64: "base64" },
+}));
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   base64ToUint8Array,

@@ -4,9 +4,19 @@ import {
   deleteLocalBookCache,
   ensureValidLocalPdf,
   getBookCacheDirectory,
+  getLocalBookFilePath,
+  isBookCachedLocally,
+  readLocalBookBase64,
 } from "./book-cache";
 
-export { getBookCacheDirectory, deleteLocalBookCache, ensureValidLocalPdf };
+export {
+  getBookCacheDirectory,
+  deleteLocalBookCache,
+  ensureValidLocalPdf,
+  isBookCachedLocally,
+  getLocalBookFilePath,
+  readLocalBookBase64,
+};
 
 export type LocalLibraryState = {
   favorites: string[];
@@ -24,7 +34,13 @@ type LocalLibraryContextValue = LocalLibraryState & {
   setFontScale: (value: number) => void;
   clearLocalData: () => Promise<void>;
   deleteBookCache: (bookId: string) => Promise<void>;
-  resolveBookPdfUri: (bookId: string, remotePdfUrl: string) => Promise<{ uri: string; isLocal: boolean }>;
+  isBookCached: (bookId: string) => Promise<boolean>;
+  getLocalBookPath: (bookId: string) => Promise<string | null>;
+  resolveBookPdfUri: (
+    bookId: string,
+    remotePdfUrl: string,
+    onProgress?: (percent: number) => void
+  ) => Promise<{ uri: string; base64?: string; isLocal: boolean }>;
 };
 
 const KEY = "al-maktaba-al-fadhila-mobile-v1";
@@ -114,9 +130,20 @@ export function LocalLibraryProvider({ children }: { children: React.ReactNode }
     await deleteLocalBookCache(bookId);
   }, []);
 
-  const resolveBookPdfUri = useCallback(async (bookId: string, remotePdfUrl: string) => {
-    return ensureValidLocalPdf(bookId, remotePdfUrl);
+  const isBookCachedHandler = useCallback(async (bookId: string) => {
+    return isBookCachedLocally(bookId);
   }, []);
+
+  const getLocalBookPathHandler = useCallback(async (bookId: string) => {
+    return getLocalBookFilePath(bookId);
+  }, []);
+
+  const resolveBookPdfUri = useCallback(
+    async (bookId: string, remotePdfUrl: string, onProgress?: (percent: number) => void) => {
+      return ensureValidLocalPdf(bookId, remotePdfUrl, onProgress);
+    },
+    []
+  );
 
   const value = useMemo(
     () => ({
@@ -128,9 +155,11 @@ export function LocalLibraryProvider({ children }: { children: React.ReactNode }
       setFontScale,
       clearLocalData,
       deleteBookCache: deleteBookCacheHandler,
+      isBookCached: isBookCachedHandler,
+      getLocalBookPath: getLocalBookPathHandler,
       resolveBookPdfUri,
     }),
-    [state, ready, toggleFavorite, saveProgress, toggleBookmark, setFontScale, clearLocalData, deleteBookCacheHandler, resolveBookPdfUri],
+    [state, ready, toggleFavorite, saveProgress, toggleBookmark, setFontScale, clearLocalData, deleteBookCacheHandler, isBookCachedHandler, getLocalBookPathHandler, resolveBookPdfUri],
   );
 
   return <Context.Provider value={value}>{children}</Context.Provider>;
