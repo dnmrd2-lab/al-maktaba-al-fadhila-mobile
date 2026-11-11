@@ -19,6 +19,7 @@ import * as Linking from "expo-linking";
 import * as WebBrowser from "expo-web-browser";
 import { FeedbackPanel, PrimaryButton } from "../../components/ui";
 import { useApp } from "../../lib/app-context";
+import { recordBookView } from "../../lib/analytics";
 import {
   deleteLocalBookCache,
   ensureValidLocalPdf,
@@ -425,6 +426,7 @@ export default function ReaderScreen() {
   const bookTitle = book?.title ?? "";
   const bookId = book?.id;
   const webViewRef = useRef<WebView>(null);
+  const viewRecordedRef = useRef<string | null>(null);
 
   const [pdfSource, setPdfSource] = useState<{ url: string; base64?: string } | null>(null);
   const [loadingPdf, setLoadingPdf] = useState(true);
@@ -557,6 +559,13 @@ export default function ReaderScreen() {
   useEffect(() => {
     void loadPdfSource();
   }, [loadPdfSource]);
+
+  useEffect(() => {
+    if (bookId && viewRecordedRef.current !== bookId) {
+      viewRecordedRef.current = bookId;
+      void recordBookView(bookId);
+    }
+  }, [bookId]);
 
   const setCurrentPage = useCallback((requestedPage: number, notifyWebView = true) => {
     if (!bookId || !Number.isFinite(requestedPage)) return;

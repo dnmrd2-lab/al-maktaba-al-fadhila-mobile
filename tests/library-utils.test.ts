@@ -6,7 +6,7 @@ const book = (overrides: Partial<Book> = {}): Book => ({
   id: "one", folderId: "aqeedah", title: "شرح الأصول الثلاثة", author: "محمد بن عبد الوهاب",
   description: "شرح مبسط في العقيدة", category: "العقيدة", coverKey: "green", coverPath: null,
   coverUri: null, pdfPath: "files/book.pdf", downloadPolicy: "READ_ONLY", pages: 120,
-  published: true, order: 1, isArchived: false, ...overrides,
+  published: true, order: 1, isArchived: false, viewsCount: 0, ...overrides,
 });
 
 describe("library utilities", () => {

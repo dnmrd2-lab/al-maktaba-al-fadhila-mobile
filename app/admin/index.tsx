@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Alert, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import * as DocumentPicker from "expo-document-picker";
@@ -12,6 +12,7 @@ import {
   resolveBookUploadBody,
   type LibraryImageExtension,
 } from "../../lib/book-upload";
+import { fetchTotalAppInstalls } from "../../lib/analytics";
 import { deleteLocalBookCache } from "../../lib/local-library";
 import { supabase } from "../../lib/supabase";
 import { palette, radius } from "../../lib/theme";
@@ -117,6 +118,7 @@ export default function AdminScreen() {
   const [password, setPassword] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState("");
+  const [totalInstalls, setTotalInstalls] = useState<number | null>(null);
 
   const [title, setTitle] = useState("");
   const [author, setAuthor] = useState("");
@@ -129,6 +131,17 @@ export default function AdminScreen() {
   const [pdfAsset, setPdfAsset] = useState<DocumentPicker.DocumentPickerAsset | null>(null);
 
   const [dbFolders, setDbFolders] = useState<Folder[]>(folders.length > 0 ? folders : [DEFAULT_FALLBACK_FOLDER]);
+
+  useEffect(() => {
+    if (session) {
+      void fetchTotalAppInstalls().then(setTotalInstalls);
+    }
+  }, [session]);
+
+  const totalBookViews = useMemo(
+    () => books.reduce((acc, b) => acc + (b.viewsCount || 0), 0),
+    [books]
+  );
 
   useEffect(() => {
     if (folders.length > 0) {
@@ -621,6 +634,67 @@ export default function AdminScreen() {
           </View>
         ) : null}
 
+        {/* Analytics Statistics Dashboard */}
+        <View style={styles.statsCard}>
+          <View style={styles.statsHeader}>
+            <View style={{ flexDirection: "row-reverse", alignItems: "center", gap: 8 }}>
+              <MaterialCommunityIcons name="chart-box-outline" size={22} color={palette.greenDark} />
+              <Text style={styles.statsTitle}>إحصائيات المنصة والتطبيق</Text>
+            </View>
+            <TouchableOpacity
+              activeOpacity={0.7}
+              onPress={() => {
+                void refresh();
+                void fetchTotalAppInstalls().then(setTotalInstalls);
+              }}
+              style={styles.statsRefreshBtn}
+              accessibilityRole="button"
+              accessibilityLabel="تحديث الإحصائيات"
+            >
+              <MaterialCommunityIcons name="refresh" size={16} color={palette.greenDark} />
+              <Text style={styles.statsRefreshText}>تحديث</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.statsGrid}>
+            {/* Total App Installations */}
+            <View style={styles.statBox}>
+              <View style={[styles.statIconCircle, { backgroundColor: "#EBF3EE" }]}>
+                <MaterialCommunityIcons name="cellphone-arrow-down" size={22} color={palette.greenDark} />
+              </View>
+              <Text style={styles.statNumber}>
+                {totalInstalls !== null ? totalInstalls.toLocaleString("ar-EG") : "..."}
+              </Text>
+              <Text style={styles.statLabel}>إجمالي تثبيتات التطبيق</Text>
+              <Text style={styles.statSubLabel}>Total App Installs</Text>
+            </View>
+
+            {/* Total Book Views */}
+            <View style={styles.statBox}>
+              <View style={[styles.statIconCircle, { backgroundColor: "#FFF8E7" }]}>
+                <MaterialCommunityIcons name="book-open-page-variant-outline" size={22} color={palette.gold} />
+              </View>
+              <Text style={styles.statNumber}>
+                {totalBookViews.toLocaleString("ar-EG")}
+              </Text>
+              <Text style={styles.statLabel}>إجمالي قراءات الكتب</Text>
+              <Text style={styles.statSubLabel}>Total Views</Text>
+            </View>
+
+            {/* Total Books */}
+            <View style={styles.statBox}>
+              <View style={[styles.statIconCircle, { backgroundColor: "#EAF2F8" }]}>
+                <MaterialCommunityIcons name="book-multiple" size={22} color="#1B4F72" />
+              </View>
+              <Text style={styles.statNumber}>
+                {books.length.toLocaleString("ar-EG")}
+              </Text>
+              <Text style={styles.statLabel}>الكتب المسجلة</Text>
+              <Text style={styles.statSubLabel}>Registered Books</Text>
+            </View>
+          </View>
+        </View>
+
         {/* Book Form Panel */}
         {canManageBooks ? (
           <View style={styles.panel}>
@@ -766,7 +840,15 @@ export default function AdminScreen() {
                 <View key={book.id} style={styles.bookRow}>
                   <View style={{ flex: 1, alignItems: "flex-end" }}>
                     <Text style={styles.bookTitle} numberOfLines={2}>{book.title}</Text>
-                    <Text style={styles.bookAuthor}>{book.author || "مؤلف غير محدد"}</Text>
+                    <View style={styles.bookMetaRow}>
+                      <Text style={styles.bookAuthor}>{book.author || "مؤلف غير محدد"}</Text>
+                      <View style={styles.viewCountBadge}>
+                        <MaterialCommunityIcons name="eye-outline" size={13} color={palette.greenDark} />
+                        <Text style={styles.viewCountText}>
+                          {(book.viewsCount ?? 0).toLocaleString("ar-EG")} قراءة
+                        </Text>
+                      </View>
+                    </View>
                   </View>
 
                   <View style={styles.badgeGroup}>
@@ -967,6 +1049,79 @@ const styles = StyleSheet.create({
   multiline: { minHeight: 88, textAlignVertical: "top" },
   error: { color: palette.danger, textAlign: "right", fontSize: 12, marginTop: 10 },
   roleRow: { flexDirection: "row-reverse", flexWrap: "wrap", gap: 7, marginHorizontal: 18, marginBottom: 4 },
+
+  statsCard: {
+    marginHorizontal: 18,
+    marginBottom: 16,
+    padding: 16,
+    borderRadius: radius.card,
+    backgroundColor: palette.surface,
+    borderWidth: 1,
+    borderColor: palette.border,
+  },
+  statsHeader: {
+    flexDirection: "row-reverse",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: palette.border,
+    paddingBottom: 10,
+  },
+  statsTitle: { color: palette.ink, fontSize: 16, fontWeight: "900" },
+  statsRefreshBtn: {
+    flexDirection: "row-reverse",
+    alignItems: "center",
+    gap: 4,
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: palette.surfaceWarm,
+  },
+  statsRefreshText: { color: palette.greenDark, fontSize: 12, fontWeight: "700" },
+  statsGrid: {
+    flexDirection: "row-reverse",
+    gap: 10,
+  },
+  statBox: {
+    flex: 1,
+    alignItems: "center",
+    paddingVertical: 14,
+    paddingHorizontal: 6,
+    borderRadius: 12,
+    backgroundColor: palette.surfaceWarm,
+    borderWidth: 1,
+    borderColor: "rgba(16, 54, 41, 0.08)",
+  },
+  statIconCircle: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 8,
+  },
+  statNumber: { color: palette.ink, fontSize: 18, fontWeight: "900", marginBottom: 2 },
+  statLabel: { color: palette.ink, fontSize: 11, fontWeight: "800", textAlign: "center" },
+  statSubLabel: { color: palette.muted, fontSize: 9, fontWeight: "600", marginTop: 2, textAlign: "center" },
+
+  bookMetaRow: {
+    flexDirection: "row-reverse",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 4,
+    flexWrap: "wrap",
+  },
+  viewCountBadge: {
+    flexDirection: "row-reverse",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: palette.greenSoft,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  viewCountText: { color: palette.greenDark, fontSize: 11, fontWeight: "800" },
   rolePill: { borderRadius: 999, backgroundColor: palette.greenSoft, paddingHorizontal: 11, paddingVertical: 7 },
   roleText: { color: palette.green, fontSize: 11, fontWeight: "800" },
   folderSection: { marginTop: 4, marginBottom: 12 },

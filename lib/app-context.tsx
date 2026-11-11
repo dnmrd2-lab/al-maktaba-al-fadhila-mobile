@@ -32,6 +32,7 @@ export type Book = {
   published: boolean;
   order: number;
   isArchived: boolean;
+  viewsCount: number;
 };
 
 type AppContextValue = {
@@ -166,14 +167,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setIsLoading(true);
     setError(null);
     try {
+      const selectColsWithViews =
+        "id, folder_id, title, author, description, category, cover_key, cover_url, pdf_url, pages, published, sort, download_policy, is_archived, views_count";
       const selectColsWithArchive =
         "id, folder_id, title, author, description, category, cover_key, cover_url, pdf_url, pages, published, sort, download_policy, is_archived";
       const selectColsFallback =
         "id, folder_id, title, author, description, category, cover_key, cover_url, pdf_url, pages, published, sort, download_policy";
 
       let bookQuery = isStaff
-        ? supabase.from("books").select(selectColsWithArchive).order("sort")
-        : supabase.from("books").select(selectColsWithArchive).eq("published", true).order("sort");
+        ? supabase.from("books").select(selectColsWithViews).order("sort")
+        : supabase.from("books").select(selectColsWithViews).eq("published", true).order("sort");
 
       let [folderResult, bookResult]: [any, any] = await withTimeout(
         Promise.all([
@@ -182,6 +185,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         ]),
         15_000,
       );
+
+      // Gracefully fallback if views_count does not exist in DB yet (PostgREST code 42703)
+      if (bookResult.error && (bookResult.error.code === "42703" || bookResult.error.message?.includes("views_count"))) {
+        const queryWithArchive = isStaff
+          ? supabase.from("books").select(selectColsWithArchive).order("sort")
+          : supabase.from("books").select(selectColsWithArchive).eq("published", true).order("sort");
+        bookResult = await queryWithArchive;
+      }
 
       // Gracefully fallback if is_archived column does not exist in DB yet (PostgREST code 42703)
       if (bookResult.error && (bookResult.error.code === "42703" || bookResult.error.message?.includes("is_archived"))) {
@@ -226,6 +237,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             published: Boolean(row.published),
             order: Number(row.sort) || 0,
             isArchived: Boolean(row.is_archived),
+            viewsCount: Number(row.views_count) || 0,
           };
         }),
       );

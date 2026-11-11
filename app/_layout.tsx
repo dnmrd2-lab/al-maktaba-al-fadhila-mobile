@@ -9,6 +9,7 @@ import { BrandSplash } from "../components/BrandSplash";
 import { AppProvider } from "../lib/app-context";
 import { LocalLibraryProvider } from "../lib/local-library";
 import { palette } from "../lib/theme";
+import { recordAppInstallation } from "../lib/analytics";
 
 if (Platform.OS !== "web" && !I18nManager.isRTL) {
   I18nManager.allowRTL(true);
@@ -24,6 +25,7 @@ export default function RootLayout() {
   useEffect(() => {
     if (Platform.OS !== "web") void SplashScreen.hideAsync().catch(() => undefined);
     const timer = setTimeout(() => setShowSplash(false), 1750);
+    void recordAppInstallation();
     return () => clearTimeout(timer);
   }, []);
 

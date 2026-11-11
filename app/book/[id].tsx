@@ -54,9 +54,17 @@ export default function BookDetailScreen() {
             <Text style={styles.category}>{book.category || "كتاب"}</Text>
             <Text style={styles.title}>{book.title}</Text>
             <Text style={styles.author}>{book.author || "مؤلف غير محدد"}</Text>
-            <View style={styles.status}>
-              <MaterialCommunityIcons name="check-decagram" size={16} color={palette.green} />
-              <Text style={styles.statusText}>متاح للقراءة المباشرة</Text>
+            <View style={styles.statusRow}>
+              <View style={styles.status}>
+                <MaterialCommunityIcons name="check-decagram" size={15} color={palette.green} />
+                <Text style={styles.statusText}>متاح للقراءة</Text>
+              </View>
+              <View style={styles.viewsBadge}>
+                <MaterialCommunityIcons name="eye-outline" size={14} color={palette.greenDark} />
+                <Text style={styles.viewsBadgeText}>
+                  {(book.viewsCount ?? 0).toLocaleString("ar-EG")} قراءة
+                </Text>
+              </View>
             </View>
           </View>
           <Image source={cover} resizeMode="cover" style={styles.cover} onError={() => setImageError(true)} />
@@ -118,6 +126,10 @@ export default function BookDetailScreen() {
           <MetaLine label="التصنيف" value={book.category || "غير محدد"} />
           <MetaLine label="عدد الصفحات" value={formatPages(book.pages)} />
           <MetaLine
+            label="مرات القراءة والمشاهدة"
+            value={`${(book.viewsCount ?? 0).toLocaleString("ar-EG")} مرة`}
+          />
+          <MetaLine
             label="التنزيل"
             value={book.downloadPolicy === "DOWNLOAD_ALLOWED" ? "مسموح من الواجهة" : "قراءة فقط من الواجهة"}
           />
@@ -148,8 +160,21 @@ const styles = StyleSheet.create({
   category: { color: palette.gold, fontSize: 12, fontWeight: "800", marginBottom: 7, textAlign: "right" },
   title: { color: palette.ink, fontSize: 19, fontWeight: "900", lineHeight: 28, textAlign: "right" },
   author: { color: palette.muted, fontSize: 13, marginTop: 8, textAlign: "right" },
-  status: { flexDirection: "row-reverse", alignItems: "center", gap: 5, marginTop: 14 },
+  statusRow: { flexDirection: "row-reverse", alignItems: "center", gap: 8, marginTop: 12, flexWrap: "wrap" },
+  status: { flexDirection: "row-reverse", alignItems: "center", gap: 4 },
   statusText: { color: palette.green, fontSize: 12, fontWeight: "700" },
+  viewsBadge: {
+    flexDirection: "row-reverse",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: palette.greenSoft,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "rgba(16, 54, 41, 0.15)",
+  },
+  viewsBadgeText: { color: palette.greenDark, fontSize: 11, fontWeight: "800" },
 
   actionRow: {
     flexDirection: "row-reverse",
