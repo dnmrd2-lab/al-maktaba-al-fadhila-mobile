@@ -9,8 +9,8 @@ add column if not exists views_count integer not null default 0;
 -- 2. Grant update on views_count to anon and authenticated users
 grant update (views_count) on public.books to anon, authenticated;
 
--- 3. Create atomic helper function to increment book views
-create or replace function public.increment_book_views(target_book_id uuid)
+-- 3. Create atomic helper function to increment book views with parameter book_id (and target_book_id alias)
+create or replace function public.increment_book_views(book_id uuid)
 returns integer
 language plpgsql
 security definer
@@ -21,7 +21,7 @@ declare
 begin
   update public.books
   set views_count = coalesce(views_count, 0) + 1
-  where id = target_book_id
+  where id = book_id
   returning views_count into new_count;
   
   return coalesce(new_count, 0);
@@ -34,17 +34,33 @@ grant execute on function public.increment_book_views(uuid) to anon, authenticat
 create table if not exists public.app_installs (
   id uuid primary key default gen_random_uuid(),
   device_id text not null unique,
+  platform text,
   created_at timestamptz not null default now()
 );
 
+-- Ensure platform column exists if table was already created
+alter table public.app_installs
+add column if not exists platform text;
+
 -- Enable Row Level Security (RLS)
 alter table public.app_installs enable row level security;
+
+-- Grant table privileges
+grant select, insert, update on public.app_installs to anon, authenticated;
 
 -- Allow anon and authenticated clients to insert new installation records
 drop policy if exists "anyone can record app install" on public.app_installs;
 create policy "anyone can record app install"
 on public.app_installs for insert
 to anon, authenticated
+with check (true);
+
+-- Allow anon and authenticated clients to update on upsert conflict
+drop policy if exists "anyone can update app install" on public.app_installs;
+create policy "anyone can update app install"
+on public.app_installs for update
+to anon, authenticated
+using (true)
 with check (true);
 
 -- Allow anon and authenticated clients to read installation count for analytics

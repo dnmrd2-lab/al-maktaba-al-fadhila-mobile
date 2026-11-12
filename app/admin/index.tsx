@@ -119,6 +119,7 @@ export default function AdminScreen() {
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState("");
   const [totalInstalls, setTotalInstalls] = useState<number | null>(null);
+  const [totalViewsCount, setTotalViewsCount] = useState<number | null>(null);
 
   const [title, setTitle] = useState("");
   const [author, setAuthor] = useState("");
@@ -132,16 +133,41 @@ export default function AdminScreen() {
 
   const [dbFolders, setDbFolders] = useState<Folder[]>(folders.length > 0 ? folders : [DEFAULT_FALLBACK_FOLDER]);
 
+  const loadPlatformStats = useCallback(async () => {
+    try {
+      // 1. Fetch exact count of rows in public.app_installs
+      const { count, error: countErr } = await supabase
+        .from("app_installs")
+        .select("*", { count: "exact", head: true });
+
+      if (!countErr && typeof count === "number") {
+        setTotalInstalls(count);
+      }
+
+      // 2. Sum views_count across all books in public.books
+      const { data: booksData, error: booksErr } = await supabase
+        .from("books")
+        .select("views_count");
+
+      if (!booksErr && Array.isArray(booksData)) {
+        const sum = booksData.reduce((acc, row: any) => acc + (Number(row.views_count) || 0), 0);
+        setTotalViewsCount(sum);
+      }
+    } catch {
+      // Fallback gracefully
+    }
+  }, []);
+
   useEffect(() => {
     if (session) {
-      void fetchTotalAppInstalls().then(setTotalInstalls);
+      void loadPlatformStats();
     }
-  }, [session]);
+  }, [session, loadPlatformStats]);
 
-  const totalBookViews = useMemo(
-    () => books.reduce((acc, b) => acc + (b.viewsCount || 0), 0),
-    [books]
-  );
+  const totalBookViews = useMemo(() => {
+    if (totalViewsCount !== null) return totalViewsCount;
+    return books.reduce((acc, b) => acc + (b.viewsCount || 0), 0);
+  }, [totalViewsCount, books]);
 
   useEffect(() => {
     if (folders.length > 0) {
@@ -645,7 +671,7 @@ export default function AdminScreen() {
               activeOpacity={0.7}
               onPress={() => {
                 void refresh();
-                void fetchTotalAppInstalls().then(setTotalInstalls);
+                void loadPlatformStats();
               }}
               style={styles.statsRefreshBtn}
               accessibilityRole="button"

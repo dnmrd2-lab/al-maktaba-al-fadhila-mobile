@@ -104,10 +104,18 @@ export async function recordBookView(bookId: string): Promise<number | null> {
     // 1. Atomic RPC call
     try {
       const { data, error: rpcError } = await supabase.rpc("increment_book_views", {
-        target_book_id: bookId,
+        book_id: bookId,
       });
       if (!rpcError && typeof data === "number") {
         return data;
+      }
+      if (rpcError) {
+        const { data: data2, error: rpcError2 } = await supabase.rpc("increment_book_views", {
+          target_book_id: bookId,
+        });
+        if (!rpcError2 && typeof data2 === "number") {
+          return data2;
+        }
       }
     } catch {
       // Fall through to direct update fallback
@@ -146,7 +154,7 @@ export async function fetchTotalAppInstalls(): Promise<number> {
   try {
     const { count, error } = await supabase
       .from("app_installs")
-      .select("id", { count: "exact", head: true });
+      .select("*", { count: "exact", head: true });
 
     if (error) return 0;
     return count ?? 0;

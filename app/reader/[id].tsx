@@ -17,15 +17,12 @@ import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import { StatusBar } from "expo-status-bar";
 import * as Linking from "expo-linking";
 import * as WebBrowser from "expo-web-browser";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { FeedbackPanel, PrimaryButton } from "../../components/ui";
 import { useApp } from "../../lib/app-context";
 import { recordBookView } from "../../lib/analytics";
 import {
   deleteLocalBookCache,
-  ensureValidLocalPdf,
-  getLocalBookFilePath,
-  isBookCachedLocally,
-  readLocalBookBase64,
   useLocalLibrary,
 } from "../../lib/local-library";
 import { canOfferDownload } from "../../lib/library-utils";
@@ -46,7 +43,7 @@ const samplePages = (title: string) => [
 ];
 
 function buildPdfHtml(
-  pdfSource: { url: string; base64?: string },
+  pdfUrl: string,
   initialPage: number,
 ): string {
   return `<!DOCTYPE html>
@@ -64,8 +61,8 @@ function buildPdfHtml(
       min-height: 100%;
       margin: 0;
       padding: 0;
-      background: #121814;
-      color: #fbfbf9;
+      background: #FAF8F5;
+      color: #103629;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Cairo", sans-serif;
       overflow-x: hidden;
       overflow-y: auto;
@@ -82,6 +79,7 @@ function buildPdfHtml(
       min-height: 100dvh;
       padding: 0;
       margin: 0;
+      background: #FAF8F5;
     }
     #canvas-container {
       width: 100%;
@@ -92,12 +90,14 @@ function buildPdfHtml(
       align-items: center;
       touch-action: pan-x pan-y pinch-zoom;
       position: relative;
+      background: #FAF8F5;
     }
     canvas {
       display: block;
-      box-shadow: 0 6px 30px rgba(0,0,0,0.75);
+      box-shadow: 0 4px 20px rgba(0,0,0,0.12);
       background: #ffffff;
       max-width: 100%;
+      border-radius: 4px;
     }
     #loader {
       display: flex;
@@ -105,7 +105,7 @@ function buildPdfHtml(
       align-items: center;
       justify-content: center;
       margin-top: 80px;
-      color: #C5A059;
+      color: #103629;
       font-size: 14px;
       font-weight: 700;
       gap: 14px;
@@ -113,8 +113,8 @@ function buildPdfHtml(
     .spinner {
       width: 38px;
       height: 38px;
-      border: 3px solid rgba(197, 160, 89, 0.25);
-      border-top-color: #C5A059;
+      border: 3px solid rgba(16, 54, 41, 0.2);
+      border-top-color: #103629;
       border-radius: 50%;
       animation: spin 0.8s linear infinite;
     }
@@ -123,13 +123,23 @@ function buildPdfHtml(
       display: none;
       margin: 40px 16px;
       padding: 20px;
-      background: rgba(192, 57, 43, 0.22);
+      background: rgba(192, 57, 43, 0.1);
       border: 1px solid #c0392b;
       border-radius: 12px;
-      color: #ff9d91;
+      color: #922b21;
       text-align: center;
       font-size: 13px;
       line-height: 22px;
+    }
+    #error-retry-btn {
+      display: inline-block;
+      margin-top: 12px;
+      padding: 8px 18px;
+      background: #103629;
+      color: #ffffff;
+      border-radius: 8px;
+      font-weight: 700;
+      cursor: pointer;
     }
   </style>
 </head>
@@ -137,7 +147,7 @@ function buildPdfHtml(
   <div id="wrapper">
     <div id="loader">
       <div class="spinner"></div>
-      <div>جارٍ تحميل صفحات الكتاب وتنسيق الخطوط...</div>
+      <div id="loader-text">جارٍ تحميل صفحات الكتاب وتنسيق الخطوط...</div>
     </div>
     <div id="error-box"></div>
     <div id="canvas-container">
@@ -146,8 +156,7 @@ function buildPdfHtml(
   </div>
 
   <script>
-    const pdfUrl = ${JSON.stringify(pdfSource.url || "")};
-    const pdfBase64 = ${JSON.stringify(pdfSource.base64 || "")};
+    const pdfUrl = ${JSON.stringify(pdfUrl || "")};
     let currentPage = ${initialPage};
     let pdfDoc = null;
     let pageRendering = false;
@@ -166,9 +175,22 @@ function buildPdfHtml(
       }
     }
 
+    function showLoader(text) {
+      const loader = document.getElementById('loader');
+      const loaderText = document.getElementById('loader-text');
+      if (loader) loader.style.display = 'flex';
+      if (loaderText && text) loaderText.textContent = text;
+    }
+
+    function hideLoader() {
+      const loader = document.getElementById('loader');
+      if (loader) loader.style.display = 'none';
+    }
+
     function renderPage(num) {
       if (!pdfDoc) return;
       pageRendering = true;
+      showLoader('جارٍ رسم الصفحة ' + num + '...');
 
       pdfDoc.getPage(num).then(function(page) {
         const dpr = Math.min(window.devicePixelRatio || 2, 3);
@@ -178,7 +200,6 @@ function buildPdfHtml(
 
         let baseScale = (winW - 4) / unscaledViewport.width;
         if (winW > winH) {
-          // Landscape mode: adapt smoothly to fit height or width comfortably
           const heightFitScale = (winH - 8) / unscaledViewport.height;
           baseScale = Math.min(baseScale, heightFitScale);
         }
@@ -201,14 +222,14 @@ function buildPdfHtml(
         return page.render(renderContext).promise;
       }).then(function() {
         pageRendering = false;
-        const loader = document.getElementById('loader');
-        if (loader) loader.style.display = 'none';
+        hideLoader();
         if (pageNumPending !== null) {
           renderPage(pageNumPending);
           pageNumPending = null;
         }
       }).catch(function(err) {
         pageRendering = false;
+        hideLoader();
         console.error('Page render error:', err);
       });
 
@@ -243,7 +264,6 @@ function buildPdfHtml(
       if (pdfDoc) queueRenderPage(currentPage);
     };
 
-    // Auto-rotation and resize listener - keeps currentPage without reloading PDF
     let resizeTimer = null;
     function handleScreenResize() {
       clearTimeout(resizeTimer);
@@ -288,21 +308,15 @@ function buildPdfHtml(
       const deltaY = endY - touchStartY;
       const elapsed = Date.now() - touchStartTime;
 
-      // 1. Single Tap in center/screen -> Toggle Immersive Controls
       if (Math.abs(deltaX) < 12 && Math.abs(deltaY) < 12 && elapsed < 350) {
         notifyRN({ type: 'toggleControls' });
         return;
       }
 
-      // 2. Swipe Gestures for Page Turns
-      // ONLY active when userZoom is 1.0 (unscaled) and single touch to avoid interfering with zoom panning
       if (userZoom <= 1.05 && elapsed < 650) {
         const absX = Math.abs(deltaX);
         const absY = Math.abs(deltaY);
         if (absX > 45 && absX > absY * 1.3) {
-          // In RTL Arabic books:
-          // Swipe right (finger moves right ->) flips to Next page
-          // Swipe left (finger moves left <-) flips to Previous page
           if (deltaX > 45) {
             notifyRN({ type: 'nextPage' });
           } else if (deltaX < -45) {
@@ -360,42 +374,30 @@ function buildPdfHtml(
         return;
       }
 
+      showLoader('جارٍ جلب صفحات الكتاب...');
+
       var docConfig = {
+        url: pdfUrl,
         cMapUrl: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/cmaps/',
         cMapPacked: true,
         standardFontDataUrl: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/standard_fonts/',
         disableFontFace: true,
-        enableXfa: false
+        enableXfa: false,
+        disableAutoFetch: true,
+        disableStream: false,
+        rangeChunkSize: 65536
       };
-
-      if (pdfBase64 && pdfBase64.length > 50) {
-        try {
-          var binary = atob(pdfBase64);
-          var len = binary.length;
-          var bytes = new Uint8Array(len);
-          for (var i = 0; i < len; i++) {
-            bytes[i] = binary.charCodeAt(i);
-          }
-          docConfig.data = bytes;
-        } catch (e) {
-          docConfig.url = pdfUrl;
-        }
-      } else {
-        docConfig.url = pdfUrl;
-      }
 
       const loadingTask = pdfjsLib.getDocument(docConfig);
 
       loadingTask.promise.then(function(pdf) {
         pdfDoc = pdf;
-        const loader = document.getElementById('loader');
-        if (loader) loader.style.display = 'none';
+        hideLoader();
         notifyRN({ type: 'totalLoaded', total: pdf.numPages });
         if (currentPage > pdf.numPages) currentPage = 1;
         renderPage(currentPage);
       }).catch(function(err) {
-        const loader = document.getElementById('loader');
-        if (loader) loader.style.display = 'none';
+        hideLoader();
         const box = document.getElementById('error-box');
         if (box) {
           box.style.display = 'block';
@@ -405,7 +407,8 @@ function buildPdfHtml(
             (isZeroByte
               ? 'يبدو أن ملف الـ PDF المرفوع فارغ (0 بايت) أو غير مكتمل على السحابة. يرجى إعادة رفع ملف الكتاب الصالح من لوحة الإدارة.'
               : (err.message || 'تعذر تحميل ملف PDF.')) +
-            '</div>';
+            '</div>' +
+            '<div id="error-retry-btn" onclick="startLoad()">إعادة المحاولة</div>';
         }
         notifyRN({ type: 'error', message: err.message || 'load_error' });
       });
@@ -420,6 +423,7 @@ function buildPdfHtml(
 export default function ReaderScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { books, isLoading, canManageBooks } = useApp();
   const local = useLocalLibrary();
   const book = books.find((item) => item.id === id);
@@ -428,14 +432,10 @@ export default function ReaderScreen() {
   const webViewRef = useRef<WebView>(null);
   const viewRecordedRef = useRef<string | null>(null);
 
-  const [pdfSource, setPdfSource] = useState<{ url: string; base64?: string } | null>(null);
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [loadingPdf, setLoadingPdf] = useState(true);
-  const [isDownloading, setIsDownloading] = useState(false);
-  const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
-  const [isLocalCached, setIsLocalCached] = useState(false);
   const [pdfError, setPdfError] = useState<string | null>(null);
 
-  const pdfDisplayUrl = pdfSource?.url ?? null;
   const [detectedTotal, setDetectedTotal] = useState<number | null>(null);
 
   const [readingPosition, setReadingPosition] = useState<{ bookId: string; page: number } | null>(null);
@@ -500,27 +500,7 @@ export default function ReaderScreen() {
     setLoadingPdf(true);
     setPdfError(null);
 
-    // 1. Fast path: check if book is already downloaded and stored locally
-    try {
-      const cached = await isBookCachedLocally(book.id);
-      if (cached) {
-        setIsLocalCached(true);
-        setIsDownloading(false);
-        setDownloadProgress(null);
-        const base64 = await readLocalBookBase64(book.id);
-        const localPath = await getLocalBookFilePath(book.id);
-        setPdfSource({
-          url: localPath || rawPath,
-          base64: base64 || undefined,
-        });
-        setLoadingPdf(false);
-        return;
-      }
-    } catch {
-      // Continue to cloud download if local check fails
-    }
-
-    // 2. Resolve cloud URL from Supabase storage
+    // Resolve direct cloud HTTPS URL from Supabase storage
     let cloudUrl = rawPath;
     if (!/^https?:\/\//i.test(rawPath)) {
       const storageKey = extractStoragePath(rawPath) ?? rawPath;
@@ -534,38 +514,56 @@ export default function ReaderScreen() {
       return;
     }
 
-    // 3. First time opening: Download and cache with progress indicator
-    setIsDownloading(true);
-    setDownloadProgress(0);
-
-    try {
-      const result = await ensureValidLocalPdf(book.id, cloudUrl, (percent) => {
-        setDownloadProgress(percent);
-      });
-      setIsLocalCached(Boolean(result.isLocal));
-      setPdfSource({
-        url: result.uri || cloudUrl,
-        base64: result.base64,
-      });
-    } catch {
-      setPdfSource({ url: cloudUrl });
-    } finally {
-      setIsDownloading(false);
-      setDownloadProgress(null);
-      setLoadingPdf(false);
-    }
+    // Direct cloud HTTPS stream - eliminates local base64/file path errors completely on Android WebView
+    setPdfUrl(cloudUrl);
+    setLoadingPdf(false);
   }, [book?.id, book?.pdfPath]);
 
   useEffect(() => {
     void loadPdfSource();
   }, [loadPdfSource]);
 
+  // Record book reading view count on open
   useEffect(() => {
     if (bookId && viewRecordedRef.current !== bookId) {
       viewRecordedRef.current = bookId;
-      void recordBookView(bookId);
+      void (async () => {
+        try {
+          // 1. Try atomic RPC with book_id
+          const { error: rpcError } = await supabase.rpc("increment_book_views", {
+            book_id: bookId,
+          });
+
+          if (rpcError) {
+            // Second attempt: call with target_book_id if previous migration was applied
+            const { error: rpcError2 } = await supabase.rpc("increment_book_views", {
+              target_book_id: bookId,
+            });
+
+            if (rpcError2) {
+              // Direct update fallback
+              const currentViews = book?.viewsCount ?? 0;
+              await supabase
+                .from("books")
+                .update({ views_count: currentViews + 1 })
+                .eq("id", bookId);
+            }
+          }
+        } catch {
+          // Fallback direct update
+          try {
+            const currentViews = book?.viewsCount ?? 0;
+            await supabase
+              .from("books")
+              .update({ views_count: currentViews + 1 })
+              .eq("id", bookId);
+          } catch {
+            // Ignore analytics error
+          }
+        }
+      })();
     }
-  }, [bookId]);
+  }, [bookId, book?.viewsCount]);
 
   const setCurrentPage = useCallback((requestedPage: number, notifyWebView = true) => {
     if (!bookId || !Number.isFinite(requestedPage)) return;
@@ -598,86 +596,57 @@ export default function ReaderScreen() {
         setCurrentPage(data.page, false);
       } else if (data.type === "totalLoaded" && typeof data.total === "number") {
         setDetectedTotal(data.total);
+      } else if (data.type === "zoomChange" && typeof data.zoom === "number") {
+        setCurrentZoom(data.zoom);
       } else if (data.type === "toggleControls") {
         setShowControls((prev) => !prev);
       } else if (data.type === "nextPage") {
         handleNextPage();
       } else if (data.type === "prevPage") {
         handlePrevPage();
-      } else if (data.type === "zoomChange" && typeof data.zoom === "number") {
-        setCurrentZoom(data.zoom);
       } else if (data.type === "searchResults") {
-        setSearchResults(Array.isArray(data.matches) ? data.matches : []);
         setSearchLoading(false);
-      } else if (data.type === "error") {
-        const msg = String(data.message || "");
-        if (msg.includes("0") || msg.includes("empty") || msg.includes("signature")) {
-          setPdfError("ملف الكتاب تالف أو فارغ (حجمه صفر بايت). يرجى إعادة رفع نسخة صالحة من لوحة الإدارة.");
-        }
+        setSearchResults(Array.isArray(data.matches) ? data.matches : []);
       }
     } catch {
-      // Ignore non-json messages
+      // ignore
     }
   };
 
-  // Execute in-book text search
-  const executeInBookSearch = useCallback(
-    (queryToSearch: string) => {
-      const q = queryToSearch.trim();
-      if (!q) {
-        setSearchResults([]);
-        return;
-      }
-      setSearchLoading(true);
+  const executeInBookSearch = (query: string) => {
+    if (!query.trim()) {
+      setSearchResults([]);
+      return;
+    }
+    setSearchLoading(true);
+    if (webViewRef.current) {
+      const escaped = JSON.stringify(query);
+      webViewRef.current.injectJavaScript(`window.searchInPdf && window.searchInPdf(${escaped}); true;`);
+    } else {
+      setSearchLoading(false);
+    }
+  };
 
-      if (book?.pdfPath && webViewRef.current) {
-        webViewRef.current.injectJavaScript(`window.searchInPdf && window.searchInPdf(${JSON.stringify(q)}); true;`);
-      } else {
-        const matches: { page: number; snippet: string }[] = [];
-        pages.forEach((pText, idx) => {
-          const pageNum = idx + 1;
-          const lower = pText.toLowerCase();
-          const pos = lower.indexOf(q.toLowerCase());
-          if (pos !== -1) {
-            const start = Math.max(0, pos - 35);
-            const end = Math.min(pText.length, pos + q.length + 35);
-            const snippet =
-              (start > 0 ? "..." : "") +
-              pText.substring(start, end).trim() +
-              (end < pText.length ? "..." : "");
-            matches.push({ page: pageNum, snippet });
-          }
-        });
-        setSearchResults(matches);
-        setSearchLoading(false);
-      }
-    },
-    [book?.pdfPath, pages],
-  );
-
-  // In-book voice search (Microphone / STT preserved)
-  const toggleInBookVoiceSearch = () => {
+  const toggleInBookVoiceSearch = async () => {
     if (isVoiceSearching) {
+      await stopArabicSpeech();
       setIsVoiceSearching(false);
-      setVoiceSearchStatus(null);
       return;
     }
 
-    setVoiceSearchStatus("جارٍ الاستماع... انطق كلمة للبحث داخل الكتاب");
     setIsVoiceSearching(true);
+    setVoiceSearchStatus("تحدث الآن... جارٍ الاستماع عبر الميكروفون...");
 
-    const session = startArabicVoiceRecognition({
-      onStart: () => setIsVoiceSearching(true),
-      onResult: (transcript) => {
+    const session = await startArabicVoiceRecognition({
+      onResult: (text) => {
+        setSearchQuery(text);
+        setVoiceSearchStatus(null);
         setIsVoiceSearching(false);
-        const clean = transcript.trim();
-        setSearchQuery(clean);
-        setVoiceSearchStatus(`تم البحث عن: «${clean}»`);
-        executeInBookSearch(clean);
+        executeInBookSearch(text);
       },
       onError: (err) => {
         setIsVoiceSearching(false);
-        setVoiceSearchStatus(`تعذر الاستماع: ${err}`);
+        setVoiceSearchStatus("يمكنك استخدام الميكروفون في لوحة المفاتيح لإملاء كلمات البحث.");
       },
       onEnd: () => setIsVoiceSearching(false),
     });
@@ -692,17 +661,16 @@ export default function ReaderScreen() {
     if (!book?.id) return;
     setLoadingPdf(true);
     setPdfError(null);
-    setIsLocalCached(false);
     await deleteLocalBookCache(book.id);
     await loadPdfSource();
   };
 
   const openInExternalViewer = async () => {
-    if (!pdfDisplayUrl) return;
+    if (!pdfUrl) return;
     try {
-      await Linking.openURL(pdfDisplayUrl);
+      await Linking.openURL(pdfUrl);
     } catch {
-      await WebBrowser.openBrowserAsync(pdfDisplayUrl);
+      await WebBrowser.openBrowserAsync(pdfUrl);
     }
   };
 
@@ -741,9 +709,9 @@ export default function ReaderScreen() {
   };
 
   const pdfHtml = useMemo(() => {
-    if (!pdfSource) return "";
-    return buildPdfHtml(pdfSource, page);
-  }, [pdfSource, page]);
+    if (!pdfUrl) return "";
+    return buildPdfHtml(pdfUrl, page);
+  }, [pdfUrl, page]);
 
   // Touch handlers for non-pdf sample text
   const sampleTouchRef = useRef<{ startX: number; startY: number; time: number } | null>(null);
@@ -801,11 +769,10 @@ export default function ReaderScreen() {
       {!showControls ? (
         <Pressable
           onPress={() => router.back()}
-          hitSlop={12}
           style={styles.floatingExitBtn}
-          accessibilityLabel="الخروج من القارئ"
+          accessibilityLabel="العودة للمكتبة"
         >
-          <MaterialCommunityIcons name="arrow-right" size={22} color={palette.white} />
+          <MaterialCommunityIcons name="arrow-right" size={20} color={palette.white} />
           <Text style={styles.floatingExitText}>خروج</Text>
         </Pressable>
       ) : null}
@@ -813,7 +780,7 @@ export default function ReaderScreen() {
       {/* Resume Reading Toast Notification */}
       {resumeToast.visible ? (
         <View style={styles.toastContainer}>
-          <MaterialCommunityIcons name="bookmark-check" size={20} color={palette.gold} />
+          <MaterialCommunityIcons name="bookmark-check" size={18} color={palette.gold} />
           <Text style={styles.toastText}>
             تم استئناف القراءة من صفحة {resumeToast.page.toLocaleString("ar-EG")}
           </Text>
@@ -865,7 +832,7 @@ export default function ReaderScreen() {
               <MaterialCommunityIcons name="magnify" size={21} color={searchModalOpen ? palette.gold : palette.white} />
             </Pressable>
 
-            {book.pdfPath && pdfDisplayUrl ? (
+            {book.pdfPath && pdfUrl ? (
               <>
                 <Pressable onPress={() => adjustZoom(0.25)} hitSlop={6} accessibilityLabel="تكبير">
                   <MaterialCommunityIcons name="magnify-plus-outline" size={21} color={palette.white} />
@@ -964,32 +931,32 @@ export default function ReaderScreen() {
           {searchLoading ? (
             <View style={styles.searchDrawerLoading}>
               <ActivityIndicator size="small" color={palette.green} />
-              <Text style={styles.searchDrawerLoadingText}>جارٍ مسح صفحات الكتاب عن الكلمة...</Text>
+              <Text style={styles.searchDrawerLoadingText}>جارٍ البحث في نص الكتاب...</Text>
             </View>
           ) : searchResults.length > 0 ? (
-            <ScrollView style={styles.searchResultsList} contentContainerStyle={{ gap: 8 }}>
-              <Text style={styles.searchResultsCount}>
-                عثرنا على {searchResults.length.toLocaleString("ar-EG")} موضع:
-              </Text>
-              {searchResults.map((res, i) => (
-                <View key={`${res.page}-${i}`} style={styles.searchResultItem}>
+            <ScrollView style={styles.searchResultsList}>
+              <Text style={styles.searchResultsCount}>نتائج البحث ({searchResults.length}):</Text>
+              {searchResults.map((res, idx) => (
+                <Pressable
+                  key={`${res.page}-${idx}`}
+                  style={styles.searchResultItem}
+                  onPress={() => {
+                    setCurrentPage(res.page);
+                    setSearchModalOpen(false);
+                  }}
+                >
                   <View style={styles.searchResultHeader}>
-                    <Pressable
-                      onPress={() => {
-                        setCurrentPage(res.page);
-                        setSearchModalOpen(false);
-                      }}
-                      style={styles.pageJumpBadge}
-                    >
-                      <Text style={styles.pageJumpBadgeText}>انتقال لصفحة {res.page.toLocaleString("ar-EG")}</Text>
-                    </Pressable>
+                    <View style={styles.pageJumpBadge}>
+                      <Text style={styles.pageJumpBadgeText}>صفحة {res.page.toLocaleString("ar-EG")}</Text>
+                    </View>
+                    <MaterialCommunityIcons name="book-open-page-variant" size={16} color={palette.green} />
                   </View>
                   <Text style={styles.searchResultSnippet}>{res.snippet}</Text>
-                </View>
+                </Pressable>
               ))}
             </ScrollView>
-          ) : searchQuery.trim() && !searchLoading ? (
-            <Text style={styles.searchDrawerEmpty}>لم يُعثر على تطابق لكلمة «{searchQuery}» في هذا الكتاب.</Text>
+          ) : searchQuery.length > 1 && !searchLoading ? (
+            <Text style={styles.searchDrawerEmpty}>لم يتم العثور على نتائج لهذه الكلمة.</Text>
           ) : null}
         </View>
       ) : null}
@@ -997,44 +964,28 @@ export default function ReaderScreen() {
       {/* Progress Line */}
       {showControls && totalKnown ? (
         <View style={styles.progressLine}>
-          <View
-            style={[
-              styles.progressFill,
-              { width: `${Math.min(100, Math.round((page / total) * 100))}%` },
-            ]}
-          />
+          <View style={[styles.progressFill, { width: `${Math.min(100, Math.max(0, (page / total) * 100))}%` }]} />
         </View>
       ) : null}
 
       {/* Bookmarks Bar */}
-      {showControls && bookmarks.length ? (
+      {showControls && bookmarks.length > 0 ? (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.bookmarks}>
-          {bookmarks.map((number) => (
-            <Pressable key={number} style={styles.bookmarkChip} onPress={() => setCurrentPage(number)}>
-              <Text style={styles.bookmarkText}>صفحة {number.toLocaleString("ar-EG")}</Text>
+          {bookmarks.map((p) => (
+            <Pressable key={p} onPress={() => setCurrentPage(p)} style={styles.bookmarkChip}>
+              <Text style={styles.bookmarkText}>ص {p.toLocaleString("ar-EG")}</Text>
             </Pressable>
           ))}
         </ScrollView>
       ) : null}
 
-      {/* Main Reader View (Takes 100% of space) */}
+      {/* Book Content / Reader Display */}
       {book.pdfPath ? (
         <View style={styles.readerContainer}>
           {loadingPdf ? (
             <View style={styles.centerBox}>
-              <ActivityIndicator size="large" color={palette.gold} />
-              <Text style={styles.centerText}>
-                {downloadProgress !== null
-                  ? `جارٍ تنزيل وحفظ الكتاب للقراءة الفورية (${downloadProgress}%)...`
-                  : isLocalCached
-                  ? "جارٍ استدعاء الكتاب فورياً من ذاكرة الهاتف..."
-                  : "جارٍ فتح صفحات الكتاب..."}
-              </Text>
-              {downloadProgress !== null ? (
-                <View style={styles.downloadProgressBar}>
-                  <View style={[styles.downloadProgressBarFill, { width: `${downloadProgress}%` }]} />
-                </View>
-              ) : null}
+              <ActivityIndicator size="large" color={palette.greenDark} />
+              <Text style={styles.centerText}>جارٍ فتح صفحات الكتاب وتجهيز القارئ...</Text>
             </View>
           ) : pdfError ? (
             <View style={styles.centerBox}>
@@ -1043,7 +994,7 @@ export default function ReaderScreen() {
               <Text style={styles.errorText}>{pdfError}</Text>
               <View style={styles.errorActions}>
                 <PrimaryButton
-                  title="إعادة المحاولة ومسح الكاش"
+                  title="إعادة المحاولة"
                   icon="refresh"
                   onPress={() => void retryAndClearCache()}
                   style={{ minWidth: 160 }}
@@ -1073,29 +1024,15 @@ export default function ReaderScreen() {
               source={{ html: pdfHtml, baseUrl: "https://localhost" }}
               onMessage={handleWebViewMessage}
               style={styles.webView}
-              javaScriptEnabled
-              domStorageEnabled
-              allowFileAccess
-              allowUniversalAccessFromFileURLs
+              cacheEnabled={true}
+              cacheMode="LOAD_CACHE_ELSE_NETWORK"
+              domStorageEnabled={true}
+              javaScriptEnabled={true}
               mixedContentMode="always"
-              startInLoadingState
-              renderLoading={() => (
-                <View style={styles.centerBox}>
-                  <ActivityIndicator size="large" color={palette.gold} />
-                  <Text style={styles.centerText}>
-                    {downloadProgress !== null
-                      ? `جارٍ حفظ صفحات الكتاب (${downloadProgress}%)...`
-                      : isLocalCached
-                      ? "جارٍ فتح الكتاب من ذاكرة الهاتف..."
-                      : "جارٍ عرض صفحات الكتاب..."}
-                  </Text>
-                  {downloadProgress !== null ? (
-                    <View style={styles.downloadProgressBar}>
-                      <View style={[styles.downloadProgressBarFill, { width: `${downloadProgress}%` }]} />
-                    </View>
-                  ) : null}
-                </View>
-              )}
+              allowFileAccess={true}
+              allowUniversalAccessFromFileURLs={true}
+              androidLayerType="hardware"
+              startInLoadingState={false}
             />
           )}
         </View>
@@ -1142,15 +1079,22 @@ export default function ReaderScreen() {
 
       {/* Bottom Navigation Controls Bar (visible when controls are shown) */}
       {showControls ? (
-        <View style={styles.controls}>
-          {/* Next Button (التالي) - in RTL placed forward */}
+        <View
+          style={[
+            styles.controls,
+            {
+              paddingBottom: Math.max(insets.bottom, 28) + 16,
+            },
+          ]}
+        >
+          {/* Next Button (التالي) */}
           <Pressable
             onPress={handleNextPage}
             disabled={totalKnown && page >= total}
             style={[styles.controlButton, totalKnown && page >= total && styles.disabled]}
             accessibilityLabel="الصفحة التالية"
           >
-            <MaterialCommunityIcons name="chevron-left" size={22} color={palette.green} />
+            <MaterialCommunityIcons name="chevron-left" size={24} color={palette.greenDark} />
             <Text style={styles.controlText}>التالي</Text>
           </Pressable>
 
@@ -1171,7 +1115,7 @@ export default function ReaderScreen() {
             accessibilityLabel="الصفحة السابقة"
           >
             <Text style={styles.controlText}>السابق</Text>
-            <MaterialCommunityIcons name="chevron-right" size={22} color={palette.green} />
+            <MaterialCommunityIcons name="chevron-right" size={24} color={palette.greenDark} />
           </Pressable>
         </View>
       ) : null}
@@ -1184,7 +1128,7 @@ const styles = StyleSheet.create({
     flex: 1,
     width: "100%",
     height: "100%",
-    backgroundColor: "#121814",
+    backgroundColor: "#FAF8F5",
   },
   floatingExitBtn: {
     position: "absolute",
@@ -1298,7 +1242,6 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: palette.border,
     padding: 12,
-    maxHeight: 320,
     zIndex: 60,
   },
   searchDrawerHeader: {
@@ -1308,35 +1251,33 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   searchDrawerTitle: {
-    color: palette.ink,
+    color: palette.greenDark,
     fontSize: 13,
     fontWeight: "800",
+    textAlign: "right",
   },
   searchDrawerInputBox: {
     flexDirection: "row-reverse",
     alignItems: "center",
-    gap: 8,
+    backgroundColor: palette.white,
     borderWidth: 1,
     borderColor: palette.border,
     borderRadius: 10,
-    backgroundColor: palette.white,
     paddingHorizontal: 10,
     minHeight: 40,
+    gap: 8,
   },
   searchDrawerInput: {
     flex: 1,
-    paddingVertical: 6,
-    color: palette.ink,
     fontSize: 13,
-    writingDirection: "rtl",
+    color: palette.ink,
+    textAlign: "right",
+    paddingVertical: 6,
   },
   drawerVoiceBtn: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+    padding: 6,
+    borderRadius: 20,
     backgroundColor: palette.greenSoft,
-    alignItems: "center",
-    justifyContent: "center",
   },
   drawerVoiceBtnActive: {
     backgroundColor: palette.greenDark,
@@ -1378,6 +1319,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     padding: 9,
     gap: 5,
+    marginBottom: 6,
   },
   searchResultHeader: {
     flexDirection: "row-reverse",
@@ -1407,32 +1349,19 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginTop: 12,
   },
-  progressLine: { height: 3, backgroundColor: "#2b3b30", alignItems: "flex-end" },
-  progressFill: { height: 3, backgroundColor: palette.gold },
-  bookmarks: { flexDirection: "row-reverse", gap: 7, paddingHorizontal: 12, paddingVertical: 8, backgroundColor: "#18241d" },
+  progressLine: { height: 3, backgroundColor: "#E6D4A9", alignItems: "flex-end" },
+  progressFill: { height: 3, backgroundColor: palette.greenDark },
+  bookmarks: { flexDirection: "row-reverse", gap: 7, paddingHorizontal: 12, paddingVertical: 8, backgroundColor: "#FAF8F5" },
   bookmarkChip: { backgroundColor: palette.goldSoft, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 5 },
   bookmarkText: { color: palette.greenDark, fontWeight: "700", fontSize: 11 },
-  readerContainer: { flex: 1, backgroundColor: "#121814" },
-  webView: { flex: 1, backgroundColor: "#121814" },
-  downloadProgressBar: {
-    width: 220,
-    height: 6,
-    backgroundColor: "rgba(255, 255, 255, 0.15)",
-    borderRadius: 999,
-    overflow: "hidden",
-    marginTop: 16,
-  },
-  downloadProgressBarFill: {
-    height: "100%",
-    backgroundColor: palette.gold,
-    borderRadius: 999,
-  },
-  centerBox: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24 },
-  centerText: { color: palette.white, fontSize: 13, fontWeight: "700", marginTop: 14, textAlign: "center" },
+  readerContainer: { flex: 1, backgroundColor: "#FAF8F5" },
+  webView: { flex: 1, backgroundColor: "#FAF8F5" },
+  centerBox: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24, backgroundColor: "#FAF8F5" },
+  centerText: { color: palette.greenDark, fontSize: 13, fontWeight: "700", marginTop: 14, textAlign: "center" },
   errorTitle: { color: palette.danger, fontSize: 16, fontWeight: "800", marginTop: 12 },
   errorText: { color: palette.muted, fontSize: 13, textAlign: "center", marginTop: 6, lineHeight: 20 },
   errorActions: { flexDirection: "row-reverse", gap: 10, marginTop: 16, flexWrap: "wrap", justifyContent: "center" },
-  reader: { flex: 1, backgroundColor: "#121814" },
+  reader: { flex: 1, backgroundColor: "#FAF8F5" },
   readerContent: { padding: 17, flexGrow: 1, justifyContent: "center" },
   sampleBanner: {
     flexDirection: "row-reverse",
@@ -1456,11 +1385,11 @@ const styles = StyleSheet.create({
     writingDirection: "rtl",
   },
   jumpRow: {
-    paddingHorizontal: 14,
+    paddingHorizontal: 16,
     paddingVertical: 8,
     borderTopWidth: 1,
-    borderTopColor: palette.border,
-    backgroundColor: palette.surface,
+    borderTopColor: "rgba(16, 54, 41, 0.08)",
+    backgroundColor: "#FAF8F5",
     zIndex: 50,
   },
   jumpHint: { color: palette.muted, fontSize: 11, textAlign: "right", marginBottom: 5, fontWeight: "600" },
@@ -1486,20 +1415,29 @@ const styles = StyleSheet.create({
   },
   savePageText: { color: palette.white, fontSize: 11, fontWeight: "800" },
   controls: {
-    minHeight: 60,
+    minHeight: 64,
     flexDirection: "row-reverse",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 14,
+    paddingHorizontal: 16,
+    paddingTop: 10,
     borderTopWidth: 1,
-    borderTopColor: palette.border,
-    backgroundColor: palette.surface,
+    borderTopColor: "rgba(16, 54, 41, 0.12)",
+    backgroundColor: "#FAF8F5",
     zIndex: 50,
   },
-  controlButton: { flexDirection: "row-reverse", alignItems: "center", gap: 4, padding: 8 },
+  controlButton: {
+    flexDirection: "row-reverse",
+    alignItems: "center",
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: "rgba(16, 54, 41, 0.08)",
+  },
   disabled: { opacity: 0.35 },
-  controlText: { color: palette.green, fontSize: 13, fontWeight: "800" },
+  controlText: { color: palette.greenDark, fontSize: 14, fontWeight: "800" },
   pageCount: { alignItems: "center" },
-  pageCountText: { color: palette.ink, fontSize: 12, fontWeight: "800" },
-  savedText: { color: palette.muted, fontSize: 9, marginTop: 2 },
+  pageCountText: { color: palette.greenDark, fontSize: 13, fontWeight: "800" },
+  savedText: { color: "#6b7a70", fontSize: 10, marginTop: 2, fontWeight: "600" },
 });
